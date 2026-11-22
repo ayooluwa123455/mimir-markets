@@ -45,6 +45,8 @@ mod test_conservation_random;
 #[cfg(test)]
 mod test_oracle;
 #[cfg(test)]
+mod test_migration_report;
+#[cfg(test)]
 mod test_preview_parity;
 #[cfg(test)]
 mod test_batch_read;

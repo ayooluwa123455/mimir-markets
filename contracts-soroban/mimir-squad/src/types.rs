@@ -105,6 +105,53 @@ pub struct SquadLimits {
     pub max_question_bytes: u32,
 }
 
+/// Lifecycle class of a live squad pool as seen by the migration compatibility
+/// report. Every pool falls in exactly one class, whether it has been upgraded
+/// yet or not.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoolMigrationState {
+    /// Not resolved: both sides still hold deposits, withdrawable pre-deadline.
+    Unresolved = 0,
+    /// Resolved as cancelled with refunds still unclaimed.
+    Cancelled = 1,
+    /// Resolved on a winning side with winner payouts still outstanding.
+    PartiallyClaimed = 2,
+    /// Resolved and fully drained: nothing is owed to anyone.
+    Settled = 3,
+}
+
+/// Version tag for the migration compatibility report. Bump if the report's
+/// shape changes so an operator can reject an unknown report.
+pub const MIGRATION_REPORT_VERSION: u32 = 1;
+
+/// Read-only compatibility snapshot for one live squad pool, used before and
+/// after an upgrade.
+///
+/// `outstanding_user_liability` is the amount the pool still owes to users:
+/// for an unresolved pool that is both pools (every deposit is still
+/// withdrawable), for a resolved pool it is the remaining escrow. The report
+/// never moves funds and never mutates state.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MigrationCompatibilityReport {
+    pub version: u32,
+    pub market_id: u64,
+    pub state: PoolMigrationState,
+    pub resolved: bool,
+    pub result: u32,
+    pub pool_a: i128,
+    pub pool_b: i128,
+    pub remaining_escrow: i128,
+    pub outstanding_user_liability: i128,
+    pub winner_claims: u32,
+    /// `false` when the stored market breaks an accounting invariant (for
+    /// example `remaining_escrow > pool_a + pool_b`, or a negative balance).
+    /// A report is still returned so an operator can see the corruption, but
+    /// an incompatible pool must not be migrated as-is.
+    pub compatible: bool,
+}
+
 /// Read-only settlement readiness for one market: whether it is already
 /// resolved, whether the oracle may resolve it now, whether pre-deadline
 /// withdrawals are still open, and the escrow still owed to winners.

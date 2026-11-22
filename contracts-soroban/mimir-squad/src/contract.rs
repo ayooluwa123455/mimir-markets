@@ -7,8 +7,8 @@ use crate::escrow;
 use crate::pool;
 use crate::storage;
 use crate::types::{
-    ClaimResult, Error, Market, PendingOracle, SettlementReadiness, SquadLimits, MAX_BATCH_SIZE,
-    MAX_DURATION, MAX_FEE_BPS, MAX_QUESTION_BYTES, MIN_DURATION,
+    ClaimResult, Error, Market, MigrationCompatibilityReport, PendingOracle, SettlementReadiness,
+    SquadLimits, MAX_BATCH_SIZE, MAX_DURATION, MAX_FEE_BPS, MAX_QUESTION_BYTES, MIN_DURATION,
 };
 
 #[contract]
@@ -273,6 +273,17 @@ impl MimirSquad {
         market_id: u64,
     ) -> Result<(u32, BytesN<32>), Error> {
         pool::settlement_manifest(&env, market_id)
+    }
+
+    /// Read-only migration compatibility report for a live squad pool.
+    ///
+    /// Reports the pool's lifecycle class and the outstanding user liability an
+    /// upgrade must preserve. Never mutates state or moves funds.
+    pub fn get_migration_report(
+        env: Env,
+        market_id: u64,
+    ) -> Result<MigrationCompatibilityReport, Error> {
+        pool::migration_compatibility_report(&env, market_id)
     }
 
     /// Read-only settlement readiness for a market. Never mutates state.

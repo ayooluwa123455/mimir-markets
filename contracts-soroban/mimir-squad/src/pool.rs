@@ -6,9 +6,11 @@ use crate::escrow;
 use crate::events;
 use crate::storage;
 use crate::types::{
-    ClaimResult, Error, Market, PendingFeeRecipient, PendingOracle, SettlementReadiness,
-    BPS_DIVISOR, FEE_RECIPIENT_TIMELOCK_SECONDS, MAX_DURATION, MAX_FEE_BPS,
-    MAX_PARTICIPANTS_PER_SIDE, MAX_QUESTION_BYTES, MAX_SQUAD_MEMBERS, MIN_DURATION,
+    ClaimResult, Error, Market, MigrationCompatibilityReport, PendingFeeRecipient, PendingOracle,
+    PoolMigrationState, SettlementReadiness, BPS_DIVISOR, FEE_RECIPIENT_TIMELOCK_SECONDS,
+    MAX_DURATION, MAX_FEE_BPS,
+    MAX_PARTICIPANTS_PER_SIDE, MAX_QUESTION_BYTES, MAX_SQUAD_MEMBERS, MIGRATION_REPORT_VERSION,
+    MIN_DURATION,
     ORACLE_TIMELOCK_SECONDS, RESULT_CANCELLED, SIDE_A, SIDE_B,
 };
 
@@ -870,6 +872,60 @@ pub fn settlement_manifest(env: &Env, market_id: u64) -> Result<(u32, BytesN<32>
         SETTLEMENT_MANIFEST_VERSION,
         settlement_manifest_digest(env, market_id, &market),
     ))
+}
+
+/// Read-only migration compatibility report for one live squad pool.
+///
+/// Classifies the pool and reports the liabilities an upgrade must preserve,
+/// without moving funds or writing storage. Resolution does not change a
+/// pool's liabilities: the same `remaining_escrow` (or, before resolution, the
+/// pool totals) backs every outstanding claim afterwards.
+pub fn migration_compatibility_report(
+    env: &Env,
+    market_id: u64,
+) -> Result<MigrationCompatibilityReport, Error> {
+    let market = storage::get_market(env, market_id)?;
+    let total = market
+        .pool_a
+        .checked_add(market.pool_b)
+        .ok_or(Error::Overflow)?;
+
+    let state = if !market.resolved {
+        PoolMigrationState::Unresolved
+    } else if market.remaining_escrow == 0 {
+        PoolMigrationState::Settled
+    } else if market.result == RESULT_CANCELLED {
+        PoolMigrationState::Cancelled
+    } else {
+        PoolMigrationState::PartiallyClaimed
+    };
+
+    // Before resolution every deposit is still owned by a user (and remains
+    // withdrawable until the deadline); after resolution only the remaining
+    // escrow is owed.
+    let outstanding_user_liability = if market.resolved {
+        market.remaining_escrow
+    } else {
+        total
+    };
+
+    let compatible = assert_market_conservation(&market).is_ok()
+        && outstanding_user_liability >= 0
+        && outstanding_user_liability <= total;
+
+    Ok(MigrationCompatibilityReport {
+        version: MIGRATION_REPORT_VERSION,
+        market_id,
+        state,
+        resolved: market.resolved,
+        result: market.result,
+        pool_a: market.pool_a,
+        pool_b: market.pool_b,
+        remaining_escrow: market.remaining_escrow,
+        outstanding_user_liability,
+        winner_claims: market.winner_claims,
+        compatible,
+    })
 }
 
 /// Read-only settlement readiness. Never mutates state.

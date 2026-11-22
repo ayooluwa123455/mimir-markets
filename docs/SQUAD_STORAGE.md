@@ -226,3 +226,42 @@ Every storage key is represented by the `DataKey` enum (`contracts-soroban/mimir
        }
    }
    ```
+
+---
+
+## Migration Compatibility Report
+
+`contracts-soroban/mimir-squad/src/pool.rs` exposes a read-only view for
+upgrading a live pool without losing user liabilities:
+
+```rust
+get_migration_report(market_id) -> MigrationCompatibilityReport
+```
+
+The report is versioned (`MIGRATION_REPORT_VERSION = 1`) and never moves funds,
+writes storage, or changes authority. It classifies one pool as:
+
+| `PoolMigrationState` | Meaning |
+| :--- | :--- |
+| `Unresolved` | Not resolved; both pools still hold user deposits. |
+| `Cancelled` | Resolved as cancelled, with unclaimed refunds outstanding. |
+| `PartiallyClaimed` | Resolved on a winning side, with winner payouts outstanding (zero or more already pulled). |
+| `Settled` | Resolved with `remaining_escrow == 0`; nothing is owed. |
+
+`outstanding_user_liability` is the amount the pool still owes to users:
+
+- **Unresolved:** `pool_a + pool_b` — every deposit is still withdrawable before
+  the deadline.
+- **Resolved (winning side or cancelled):** `remaining_escrow` — the exact sum of
+  unclaimed gross payouts/refunds, before the profit fee.
+
+`compatible` is `false` when the stored market breaks an accounting invariant
+(for example `remaining_escrow > pool_a + pool_b` or a negative balance). The
+report is still returned so an operator can inspect the corruption, but such a
+pool must not be migrated as-is.
+
+Because an upgrade keeps the contract id and its persistent `Market`, `Deposit`
+and `Claimed` entries, the liabilities reported before the upgrade are the same
+ones `claim`, `claim_parked_payout` and `withdraw_before_deadline` honour
+afterwards. `contracts-soroban/mimir-squad/src/test_migration_report.rs` pins
+that behaviour for unresolved, cancelled and partially claimed synthetic pools.

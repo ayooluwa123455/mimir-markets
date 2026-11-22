@@ -46,6 +46,8 @@ mod test_settlement;
 #[cfg(test)]
 mod test_verdict;
 #[cfg(test)]
+mod test_migration_fixtures;
+#[cfg(test)]
 mod test_preflight;
 #[cfg(test)]
 mod test_batch_read;

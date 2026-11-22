@@ -1,0 +1,15 @@
+{
+  "name": "legacy_partially_paid_pool_replays_remaining_pull",
+  "creator_stake": 100000000,
+  "challengers": [
+    100000000,
+    100000000
+  ],
+  "state": "resolved",
+  "pre_upgrade_claims": 1,
+  "expected_escrow_liability": 150000000,
+  "expected_payouts": [
+    150000000,
+    150000000
+  ]
+}

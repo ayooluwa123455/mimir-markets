@@ -1,0 +1,17 @@
+{
+  "name": "legacy_dust_boundary_last_puller_absorbs_remainder",
+  "creator_stake": 100000000,
+  "challengers": [
+    20000000,
+    20000000,
+    20000001
+  ],
+  "state": "resolved",
+  "pre_upgrade_claims": 0,
+  "expected_escrow_liability": 160000001,
+  "expected_payouts": [
+    53333332,
+    53333332,
+    53333337
+  ]
+}

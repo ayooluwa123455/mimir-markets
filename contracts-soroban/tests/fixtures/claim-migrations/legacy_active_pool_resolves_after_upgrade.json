@@ -1,0 +1,15 @@
+{
+  "name": "legacy_active_pool_resolves_after_upgrade",
+  "creator_stake": 100000000,
+  "challengers": [
+    40000000,
+    60000000
+  ],
+  "state": "active",
+  "pre_upgrade_claims": 0,
+  "expected_escrow_liability": 200000000,
+  "expected_payouts": [
+    80000000,
+    120000000
+  ]
+}

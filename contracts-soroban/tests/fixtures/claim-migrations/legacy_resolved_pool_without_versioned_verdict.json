@@ -1,0 +1,13 @@
+{
+  "name": "legacy_resolved_pool_without_versioned_verdict",
+  "creator_stake": 100000000,
+  "challengers": [
+    100000000
+  ],
+  "state": "resolved",
+  "pre_upgrade_claims": 0,
+  "expected_escrow_liability": 200000000,
+  "expected_payouts": [
+    200000000
+  ]
+}

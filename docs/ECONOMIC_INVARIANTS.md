@@ -232,3 +232,29 @@ Source: `contracts-soroban/mimir-squad/src/pool.rs`. Tests: `src/test_lifecycle.
 - `src/test_dust_isolation.rs` isolates the same dust property for the squad pool:
   the final winner's gross is `formula + dust`, the dust is identical under either
   claim order, an exactly dividing pool leaves none
+
+## Cross-version claim migration
+
+Soroban contract state is authoritative across an upgrade: the contract id and
+its persistent `Claim`, `Challengers`, `Verdict` and `Withdrawable` entries
+survive, so settlement after the upgrade must preserve the escrow liability,
+the verdict meaning and the pull eligibility a claim had before it.
+
+The replay fixtures under
+`contracts-soroban/tests/fixtures/claim-migrations/` describe synthetic funded
+states (active, resolved without a versioned verdict, partially paid and a
+dust boundary). `contracts-soroban/mimir-market/src/test_migration_fixtures.rs`
+builds each state, snapshots the pre-upgrade liability, and replays the pull
+endpoints after the upgrade:
+
+- **Liability:** a resolved claim keeps exactly its `remaining_escrow`; an
+  active claim resolves to `creator_stake + total_challenger_stake`. Every
+  gross pull draws down that figure, and the final puller absorbs the
+  truncation dust, so the escrow empties to zero (fees excepted).
+- **Verdict meaning:** a claim resolved by a pre-versioning build has no
+  `Verdict` record. `get_verdict` falls back to `Claim.winner_side` and reports
+  it as `VERDICT_VERSION_V1`; a challenger-win stays payable and a creator-win
+  keeps challenger pulls ineligible (`ChallengersDidNotWin`).
+- **Pull eligibility:** an unresolved claim offers no pull before or after the
+  upgrade (`ClaimNotResolved`), and a challenger that already pulled cannot
+  pull again (`AlreadyClaimedPayout`).

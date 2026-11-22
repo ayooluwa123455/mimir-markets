@@ -1,0 +1,24 @@
+{
+  "name": "zero_fee_even_split",
+  "fee_bps": 0,
+  "winners": [
+    {
+      "deposit": 100000000,
+      "expected_net": 200000000
+    },
+    {
+      "deposit": 100000000,
+      "expected_net": 200000000
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 100000000,
+      "expected_net": 0
+    },
+    {
+      "deposit": 100000000,
+      "expected_net": 0
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 //! Value types for the Mimir market. Mirrors the structs and enums of
 //! `contracts/MimirV2.sol`.
 
-use soroban_sdk::{contracterror, contracttype, Address, BytesN, String};
+use soroban_sdk::{contracterror, contracttype, Address, BytesN, String, Vec};
 
 // ── Limits (mirror MimirV2.sol) ──────────────────────────────────────────────
 
@@ -278,6 +278,10 @@ pub struct Claim {
     /// How many challengers have pulled their settlement. The last one absorbs
     /// whatever `remaining_escrow` is left, so truncation dust is never stranded.
     pub challenger_claims: u32,
+    /// Monotonic revision of this claim, starting at 1 on creation. Mutations
+    /// that finalise a lifecycle transition bump it so a reviewer can detect a
+    /// stale view before submitting the next mutation.
+    pub revision: u32,
     pub created_at: u64,
     pub evidence_hash: Option<BytesN<32>>,
     pub context_hash: BytesN<32>,
@@ -507,4 +511,6 @@ pub enum Error {
     /// in). The write is refused so the contract never records an impossible
     /// state.
     ConservationViolation = 47,
+    /// New claims, challenges and resolutions are blocked while paused.
+    Paused = 48,
 }

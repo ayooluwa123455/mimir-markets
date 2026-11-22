@@ -72,7 +72,7 @@ fn settlement_readiness_reports_unmet_prerequisites_without_mutation() {
     f.client().deposit(&participant, &id, &SIDE_A, &USDC);
 
     let before = f.client().get_market(&id);
-    let ready = f.client().settlement_readiness(&id);
+    let ready = f.client().get_settlement_readiness(&id);
     assert!(!ready.resolved);
     assert!(!ready.oracle_ready);
     assert_eq!(f.client().get_market(&id), before);

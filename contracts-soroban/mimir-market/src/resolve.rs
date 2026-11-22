@@ -24,7 +24,10 @@ use crate::escrow;
 use crate::events;
 use crate::fees;
 use crate::storage;
-use crate::types::{Challenger, Claim, ClaimState, Error, PayoutQuote, Verdict, WinnerSide};
+use crate::types::{
+    Challenger, Claim, ClaimPreflight, ClaimState, Error, PayoutQuote, PreflightReason, Verdict,
+    WinnerSide,
+};
 use crate::util;
 
 pub fn resolve_claim(
@@ -491,6 +494,7 @@ pub fn claim_fees(env: &Env, who: Address) -> Result<i128, Error> {
     }
     storage::clear_accrued_fees(env, &who); // effects before interaction
     storage::add_lifetime_fees_claimed(env, amount);
+    storage::add_claimed_fees(env, &who, amount);
     let usdc = storage::usdc(env)?;
     escrow::push(env, &usdc, &who, amount);
     events::FeeClaimed {

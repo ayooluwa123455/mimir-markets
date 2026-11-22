@@ -94,6 +94,29 @@ pub struct ClaimResult {
     pub net: i128,
 }
 
+/// Protocol limits enforced by `create_market`, exposed for clients so a UI can
+/// validate a market before submitting it.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SquadLimits {
+    pub max_fee_bps: u32,
+    pub min_duration: u64,
+    pub max_duration: u64,
+    pub max_question_bytes: u32,
+}
+
+/// Read-only settlement readiness for one market: whether it is already
+/// resolved, whether the oracle may resolve it now, whether pre-deadline
+/// withdrawals are still open, and the escrow still owed to winners.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SettlementReadiness {
+    pub resolved: bool,
+    pub oracle_ready: bool,
+    pub withdrawal_open: bool,
+    pub remaining_escrow: i128,
+}
+
 /// Versioned, digest-bound settlement manifest. Binds the winning side, fee
 /// policy and pool totals so that every claim order can be checked against a
 /// single commitment, and so integer conservation (`pool_a + pool_b ==
@@ -187,4 +210,6 @@ pub enum Error {
     UnsupportedManifestVersion = 35,
     /// The settlement manifest digest does not match the bound market state.
     ManifestDigestMismatch = 36,
+    /// New market creation or deposits are blocked while the pool is paused.
+    Paused = 37,
 }

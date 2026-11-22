@@ -1,0 +1,24 @@
+{
+  "name": "dust_absorption_last_claimant",
+  "fee_bps": 0,
+  "winners": [
+    {
+      "deposit": 1,
+      "expected_net": 3
+    },
+    {
+      "deposit": 1,
+      "expected_net": 3
+    },
+    {
+      "deposit": 1,
+      "expected_net": 4
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 7,
+      "expected_net": 0
+    }
+  ]
+}

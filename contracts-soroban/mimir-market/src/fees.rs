@@ -53,8 +53,8 @@ pub fn pool_share(
 /// authoritative. `outstanding` is derived as `accrued - claimed` and is never
 /// negative under the invariant that claims never exceed accruals.
 pub fn fee_balance(env: &Env, recipient: &Address) -> FeeBalance {
-    let accrued = storage::get_accrued_fees(env, recipient);
-    let claimed = storage::get_claimed_fees(env, recipient);
+    let accrued = storage::accrued_fees(env, recipient);
+    let claimed = storage::claimed_fees(env, recipient);
     FeeBalance {
         accrued,
         claimed,

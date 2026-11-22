@@ -1,0 +1,52 @@
+{
+  "name": "ten_winners_zero_fee",
+  "fee_bps": 0,
+  "winners": [
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    },
+    {
+      "deposit": 10000000,
+      "expected_net": 20000000
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 100000000,
+      "expected_net": 0
+    }
+  ]
+}

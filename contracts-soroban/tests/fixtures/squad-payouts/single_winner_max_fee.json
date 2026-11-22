@@ -1,0 +1,20 @@
+{
+  "name": "single_winner_max_fee",
+  "fee_bps": 1000,
+  "winners": [
+    {
+      "deposit": 100000000,
+      "expected_net": 280000000
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 70000000,
+      "expected_net": 0
+    },
+    {
+      "deposit": 130000000,
+      "expected_net": 0
+    }
+  ]
+}

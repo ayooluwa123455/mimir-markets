@@ -1,0 +1,20 @@
+{
+  "name": "dust_single_winner",
+  "fee_bps": 0,
+  "winners": [
+    {
+      "deposit": 100000000,
+      "expected_net": 200000000
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 30000000,
+      "expected_net": 0
+    },
+    {
+      "deposit": 70000000,
+      "expected_net": 0
+    }
+  ]
+}

@@ -1,19 +1,16 @@
 //! Market lifecycle: create, deposit, withdraw, resolve, claim.
 
-use soroban_sdk::xdr::ToXdr;
-use soroban_sdk::{Address, Env, String};
+use soroban_sdk::{Address, BytesN, Env, String};
 
 use crate::escrow;
 use crate::events;
 use crate::storage;
 use crate::types::{
-    ClaimResult, Error, Market, PendingOracle, BPS_DIVISOR, MAX_DURATION, MAX_FEE_BPS,
+    ClaimResult, Error, Market, PendingFeeRecipient, PendingOracle, SettlementReadiness,
+    BPS_DIVISOR, FEE_RECIPIENT_TIMELOCK_SECONDS, MAX_DURATION, MAX_FEE_BPS,
     MAX_PARTICIPANTS_PER_SIDE, MAX_QUESTION_BYTES, MAX_SQUAD_MEMBERS, MIN_DURATION,
     ORACLE_TIMELOCK_SECONDS, RESULT_CANCELLED, SIDE_A, SIDE_B,
 };
-
-#[cfg(test)]
-mod payout_fixtures;
 
 /// The fee on one winning claim: `floor(profit * fee_bps / BPS_DIVISOR)`.
 ///
@@ -164,6 +161,9 @@ pub fn create_market(
     fee_bps: u32,
 ) -> Result<u64, Error> {
     captain.require_auth();
+    if storage::is_paused(env) {
+        return Err(Error::Paused);
+    }
 
     if question.is_empty() {
         return Err(Error::EmptyQuestion);
@@ -220,6 +220,9 @@ pub fn deposit(
     amount: i128,
 ) -> Result<(), Error> {
     participant.require_auth();
+    if storage::is_paused(env) {
+        return Err(Error::Paused);
+    }
 
     let mut market = storage::get_market(env, market_id)?;
     if market.resolved || env.ledger().timestamp() >= market.deadline {
@@ -728,6 +731,40 @@ pub fn preview_claim(
         });
     }
 
+    if market.result != RESULT_CANCELLED && side != market.result {
+        return Ok(ClaimResult {
+            gross: 0,
+            fee: 0,
+            net: 0,
+        });
+    }
+    if market.result == RESULT_CANCELLED {
+        return Ok(ClaimResult {
+            gross: principal,
+            fee: 0,
+            net: principal,
+        });
+    }
+
+    // A settled position previews as nothing: `claim` is a no-op after the pull,
+    // so the preview must agree instead of promising a second payout.
+    if storage::has_claimed(env, market_id, side, participant) {
+        return Ok(ClaimResult {
+            gross: 0,
+            fee: 0,
+            net: 0,
+        });
+    }
+
+    let gross = winner_gross(&market, principal)?;
+    let fee = profit_fee(principal, gross, market.fee_bps)?;
+    Ok(ClaimResult {
+        gross,
+        fee,
+        net: gross - fee,
+    })
+}
+
 /// Explicit claim state for a wallet on one side, so callers never have to
 /// infer meaning from a zero amount.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -769,37 +806,81 @@ pub fn preview_claim_state(
     Ok(ClaimState::Claimable)
 }
 
-    if market.result != RESULT_CANCELLED && side != market.result {
-        return Ok(ClaimResult {
-            gross: 0,
-            fee: 0,
-            net: 0,
-        });
-    }
-    if market.result == RESULT_CANCELLED {
-        return Ok(ClaimResult {
-            gross: principal,
-            fee: 0,
-            net: principal,
-        });
-    }
+/// Pause or unpause new market creation and deposits.
+///
+/// The fee recipient is the pool's operations authority. Pause never gates
+/// withdrawals, claims or parked-payout retries: captors must always be able
+/// to exit, so `withdraw_before_deadline`, `claim`, `claim_parked_payout` and
+/// `claim_fees` never consult the flag.
+pub fn set_paused(env: &Env, paused: bool) -> Result<(), Error> {
+    storage::fee_recipient(env)?.require_auth();
+    storage::set_paused(env, paused);
+    Ok(())
+}
 
-    // A settled position previews as nothing: `claim` is a no-op after the pull,
-    // so the preview must agree instead of promising a second payout.
-    if storage::has_claimed(env, market_id, side, participant) {
-        return Ok(ClaimResult {
-            gross: 0,
-            fee: 0,
-            net: 0,
-        });
-    }
+/// Queue a fee-recipient rotation. The current fee recipient must authorize.
+/// The change is delayed so participants have notice before fee custody moves.
+pub fn queue_fee_recipient(env: &Env, new_recipient: Address) -> Result<(), Error> {
+    storage::fee_recipient(env)?.require_auth();
+    let executable_at = env
+        .ledger()
+        .timestamp()
+        .checked_add(FEE_RECIPIENT_TIMELOCK_SECONDS)
+        .ok_or(Error::Overflow)?;
 
-    let gross = winner_gross(&market, principal)?;
-    let fee = profit_fee(principal, gross, market.fee_bps)?;
-    Ok(ClaimResult {
-        gross,
-        fee,
-        net: gross - fee,
+    storage::set_pending_fee_recipient(
+        env,
+        &PendingFeeRecipient {
+            next: new_recipient,
+            executable_at,
+        },
+    );
+    Ok(())
+}
+
+pub fn cancel_fee_recipient(env: &Env) -> Result<(), Error> {
+    storage::fee_recipient(env)?.require_auth();
+    if storage::pending_fee_recipient(env).is_none() {
+        return Err(Error::NoFeeRecipientQueued);
+    }
+    storage::clear_pending_fee_recipient(env);
+    Ok(())
+}
+
+/// Permissionless once the timelock has elapsed. Accrued but unclaimed fees
+/// follow the recipient address, so they pay the new recipient after rotation.
+pub fn execute_fee_recipient(env: &Env) -> Result<(), Error> {
+    let queued = storage::pending_fee_recipient(env).ok_or(Error::NoFeeRecipientQueued)?;
+    if env.ledger().timestamp() < queued.executable_at {
+        return Err(Error::Timelocked);
+    }
+    storage::set_fee_recipient(env, &queued.next);
+    storage::clear_pending_fee_recipient(env);
+    Ok(())
+}
+
+/// Versioned digest binding a resolved market's settlement state, so an
+/// off-chain manifest can be checked against the authoritative on-chain state.
+pub fn settlement_manifest(env: &Env, market_id: u64) -> Result<(u32, BytesN<32>), Error> {
+    let market = storage::get_market(env, market_id)?;
+    if !market.resolved {
+        return Err(Error::NotClaimable);
+    }
+    Ok((
+        SETTLEMENT_MANIFEST_VERSION,
+        settlement_manifest_digest(env, market_id, &market),
+    ))
+}
+
+/// Read-only settlement readiness. Never mutates state.
+pub fn settlement_readiness(env: &Env, market_id: u64) -> Result<SettlementReadiness, Error> {
+    let market = storage::get_market(env, market_id)?;
+    let now = env.ledger().timestamp();
+    Ok(SettlementReadiness {
+        resolved: market.resolved,
+        oracle_ready: market.resolved || now >= market.deadline,
+        withdrawal_open: !market.resolved && now < market.deadline,
+        remaining_escrow: market.remaining_escrow,
     })
 }
 

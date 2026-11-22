@@ -102,7 +102,7 @@ fn contract_limits_is_read_only() {
         f.escrow_balance(),
         "reading limits must not touch escrow"
     );
-    assert!(f.client().get_claim(&claim_ids[0]).is_some_or_expected());
+    assert!(f.client().try_get_claim(&claim_ids[0]).is_ok());
 }
 
 // ── positive ──────────────────────────────────────────────────────────────────

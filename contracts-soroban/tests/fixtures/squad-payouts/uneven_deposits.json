@@ -1,0 +1,24 @@
+{
+  "name": "uneven_deposits",
+  "fee_bps": 250,
+  "winners": [
+    {
+      "deposit": 30000000,
+      "expected_net": 69000000
+    },
+    {
+      "deposit": 90000000,
+      "expected_net": 207000000
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 50000000,
+      "expected_net": 0
+    },
+    {
+      "deposit": 110000000,
+      "expected_net": 0
+    }
+  ]
+}

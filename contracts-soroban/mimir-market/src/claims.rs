@@ -16,7 +16,11 @@ use crate::util;
 /// single persistent entry written by `create_claim`.
 const CREATOR_INDEX_PAGE_SIZE: u32 = 100;
 
-fn creator_index_page_key(env: &Env, creator: &Address, page: u32) {
+fn creator_index_page_key(
+    _env: &Env,
+    creator: &Address,
+    page: u32,
+) -> (soroban_sdk::Symbol, Address, u32) {
     (
         soroban_sdk::symbol_short!("cclm_pg"),
         creator.clone(),
@@ -24,7 +28,10 @@ fn creator_index_page_key(env: &Env, creator: &Address, page: u32) {
     )
 }
 
-fn creator_index_count_key(env: &Env, creator: &Address) {
+fn creator_index_count_key(
+    _env: &Env,
+    creator: &Address,
+) -> (soroban_sdk::Symbol, Address) {
     (soroban_sdk::symbol_short!("cclm_ct"), creator.clone())
 }
 
@@ -71,14 +78,14 @@ pub fn get_creator_claims(
         }
     }
     // TTL extension like other reads.
-    env.storage().persistent().extend_ttl(&count_key, 30, env.ledger().max_ttl() / 2);
+    env.storage().persistent().extend_ttl(&count_key, 30, 518_400);
     if out.len() > 0 {
         let first_page = offset / CREATOR_INDEX_PAGE_SIZE;
         let last_page = (index - 1) / CREATOR_INDEX_PAGE_SIZE;
         let mut p = first_page;
         while p <= last_page {
             let key = creator_index_page_key(env, &creator, p);
-            env.storage().persistent().extend_ttl(&key, 30, env.ledger().max_ttl() / 2);
+            env.storage().persistent().extend_ttl(&key, 30, 518_400);
             p += 1;
         }
     }
@@ -159,6 +166,7 @@ pub fn create_claim(env: &Env, creator: Address, params: CreateParams) -> Result
         challenger_count: 0,
         remaining_escrow: 0,
         challenger_claims: 0,
+        revision: 1,
         created_at: env.ledger().timestamp(),
         evidence_hash: None,
         context_hash: params.context_hash,
@@ -345,7 +353,86 @@ pub fn challenge_claim(
             challenger: challenger.clone(),
             stake: stake_amount,
             gross: fixed_odds_gross,
+            profit: fixed_odds_profit,
+            reserved_creator_liability: claim.reserved_creator_liability,
+            available_creator_liquidity: claim.creator_stake
+                - claim.reserved_creator_liability,
         }
         .publish(env);
     }
+    Ok(())
+}
+
+// ── Deadline transition and creator cancellation ────────────────────────────
+
+/// Refund an unfunded Open claim to its creator and finalise it.
+///
+/// The accounting guard is checked before anything is written: a claim that
+/// still carries counterparty exposure belongs to settlement, not to a refund.
+fn refund_open_claim(env: &Env, claim_id: u64, claim: &mut Claim) -> Result<(), Error> {
+    if claim.challenger_count != 0
+        || claim.total_challenger_stake != 0
+        || claim.reserved_creator_liability != 0
+    {
+        return Err(Error::ClaimHasActiveClaims);
+    }
+
+    let usdc = storage::usdc(env)?;
+    if escrow::balance(env, &usdc) < claim.creator_stake {
+        return Err(Error::RefundNotEscrowed);
+    }
+
+    claim.state = ClaimState::Cancelled;
+    claim.winner_side = WinnerSide::None;
+    claim.remaining_escrow = 0;
+    claim.revision = claim.revision.checked_add(1).ok_or(Error::Overflow)?;
+    storage::set_claim(env, claim_id, claim);
+
+    // Pull-based custody: an unreachable creator wallet parks the refund rather
+    // than reverting the cancellation.
+    escrow::push_or_park(env, &usdc, &claim.creator, claim.creator_stake);
+    Ok(())
+}
+
+/// Creator-initiated cancellation of a claim that no challenger has funded.
+///
+/// Idempotent once cancelled. Gated on the state label first (`ClaimNotOpen`)
+/// and then on the claim's own accounting (`ClaimHasActiveClaims`), so a stale
+/// label can never release counterparty funds.
+pub fn cancel_claim(env: &Env, claim_id: u64) -> Result<(), Error> {
+    let mut claim = storage::get_claim(env, claim_id)?;
+    claim.creator.require_auth();
+
+    if claim.state == ClaimState::Cancelled {
+        return Ok(());
+    }
+    if claim.state != ClaimState::Open {
+        return Err(Error::ClaimNotOpen);
+    }
+    refund_open_claim(env, claim_id, &mut claim)
+}
+
+/// Permissionless deadline transition.
+///
+/// Once the deadline has passed an unfunded Open claim is cancelled and its
+/// creator refunded; an Active claim is left for oracle resolution, and the
+/// read-write simply bumps its TTL. Before the deadline this is `Timelocked`.
+pub fn transition_deadline(env: &Env, claim_id: u64) -> Result<(), Error> {
+    let mut claim = storage::get_claim(env, claim_id)?;
+
+    if claim.state == ClaimState::Cancelled {
+        return Ok(());
+    }
+    if claim.state != ClaimState::Open && claim.state != ClaimState::Active {
+        return Ok(());
+    }
+    if env.ledger().timestamp() < claim.deadline {
+        return Err(Error::Timelocked);
+    }
+    if claim.state == ClaimState::Active {
+        // Re-write to extend the entry's TTL without changing its meaning.
+        storage::set_claim(env, claim_id, &claim);
+        return Ok(());
+    }
+    refund_open_claim(env, claim_id, &mut claim)
 }

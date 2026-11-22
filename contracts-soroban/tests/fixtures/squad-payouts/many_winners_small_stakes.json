@@ -1,0 +1,32 @@
+{
+  "name": "many_winners_small_stakes",
+  "fee_bps": 500,
+  "winners": [
+    {
+      "deposit": 1,
+      "expected_net": 3
+    },
+    {
+      "deposit": 2,
+      "expected_net": 6
+    },
+    {
+      "deposit": 7,
+      "expected_net": 22
+    },
+    {
+      "deposit": 13,
+      "expected_net": 41
+    },
+    {
+      "deposit": 21,
+      "expected_net": 69
+    }
+  ],
+  "losers": [
+    {
+      "deposit": 100,
+      "expected_net": 0
+    }
+  ]
+}

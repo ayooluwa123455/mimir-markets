@@ -74,7 +74,10 @@ impl MimirSquad {
     /// Read-only preview of the refundable liabilities that `cancel_market`
     /// would create for `market_id`. Performs no value movement or authority
     /// changes.
-    pub fn preview_cancel_market(env: Env, market_id: u64) -> Result<CancelPreview, Error> {
+    pub fn preview_cancel_market(
+        env: Env,
+        market_id: u64,
+    ) -> Result<(ClaimResult, ClaimResult), Error> {
         pool::preview_cancel_market(&env, market_id)
     }
 
@@ -181,11 +184,9 @@ impl MimirSquad {
         who: Address,
     ) -> Result<(i128, bool), Error> {
         let already_claimed = storage::has_claimed(&env, market_id, side, &who);
-        let claimable = match pool::preview_claim(&env, market_id, side, &who) {
-            Ok(preview) => preview.amount,
-            Err(Error::NoPosition) => 0,
-            Err(e) => return Err(e),
-        };
+        // `preview_claim` returns zero for a wallet with no position, so this
+        // read-only path never errors for an unknown participant.
+        let claimable = pool::preview_claim(&env, market_id, side, &who)?.net;
         Ok((claimable, already_claimed))
     }
 
@@ -242,7 +243,7 @@ impl MimirSquad {
     }
 
     pub fn get_pending_fee_recipient(env: Env) -> Option<Address> {
-        storage::pending_fee_recipient(&env)
+        storage::pending_fee_recipient(&env).map(|pending| pending.next)
     }
 
     pub fn get_escrow_balance(env: Env) -> Result<i128, Error> {

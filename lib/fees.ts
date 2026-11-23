@@ -29,6 +29,8 @@
  *    contract that reverts would take the whole settlement down with it.
  */
 
+import { ROUNDING_POLICY_VERSION, requireRoundingPolicyVersion } from "./rounding-policy";
+
 export const BPS_DIVISOR = 10_000n;
 
 /**
@@ -187,7 +189,10 @@ export function splitFees(args: {
   grossPayoutUnits: bigint;
   snapshot: FeeSnapshot;
   outcome: SettlementOutcome;
+  requiredRoundingPolicyVersion?: number;
 }): FeeSplit {
+  requireRoundingPolicyVersion(args.requiredRoundingPolicyVersion === undefined
+    ? ROUNDING_POLICY_VERSION : args.requiredRoundingPolicyVersion);
   const { principalUnits, grossPayoutUnits, snapshot, outcome } = args;
 
   // A refund is returned whole. There is no profit to charge, and taking a cut of
@@ -274,7 +279,10 @@ export function settleMarket(args: {
   participants: Participant[];
   snapshot: FeeSnapshot;
   outcome: SettlementOutcome;
+  requiredRoundingPolicyVersion?: number;
 }): MarketSettlement {
+  requireRoundingPolicyVersion(args.requiredRoundingPolicyVersion === undefined
+    ? ROUNDING_POLICY_VERSION : args.requiredRoundingPolicyVersion);
   const { participants, snapshot, outcome } = args;
 
   const escrowInflowUnits = participants.reduce((sum, p) => sum + p.stakeUnits, 0n);
@@ -290,6 +298,7 @@ export function settleMarket(args: {
       grossPayoutUnits: participant.grossPayoutUnits,
       snapshot,
       outcome,
+      requiredRoundingPolicyVersion: args.requiredRoundingPolicyVersion,
     });
     if (split.payoutUnits > 0n) {
       payouts.push({ address: participant.address, amountUnits: split.payoutUnits });
@@ -490,4 +499,46 @@ export function scheduleTotalBps(
   schedule: { platformBps: number; agentOwnerBps: number; basketCreatorBps: number } = FEE_SCHEDULE,
 ): number {
   return schedule.platformBps + schedule.agentOwnerBps + schedule.basketCreatorBps;
+}
+
+/** Known recipient classes for bounded aggregate liabilities. */
+export enum FeeRecipientClass {
+  Platform = 1,
+  AgentOwner = 2,
+}
+
+/** Liability summary for a specific recipient class. */
+export interface FeeClassLiability {
+  recipientClass: FeeRecipientClass;
+  accrued: bigint;
+  claimed: bigint;
+  collectible: bigint;
+}
+
+/** Bounded aggregate liabilities across known recipient classes and user principal. */
+export interface FeeLiabilitySummary {
+  platformAccrued: bigint;
+  platformClaimed: bigint;
+  platformCollectible: bigint;
+  agentOwnerAccrued: bigint;
+  agentOwnerClaimed: bigint;
+  agentOwnerCollectible: bigint;
+  totalCollectibleFees: bigint;
+  userPrincipal: bigint;
+  totalWithdrawable: bigint;
+}
+
+/**
+ * Segregate collectible fees from custody balance to compute user principal.
+ *
+ * Invariant:
+ *   user_principal = max(0, total_escrow_balance - total_collectible_fees)
+ */
+export function calculateUserPrincipal(
+  escrowBalanceUnits: bigint,
+  totalCollectibleFeesUnits: bigint,
+): bigint {
+  return escrowBalanceUnits > totalCollectibleFeesUnits
+    ? escrowBalanceUnits - totalCollectibleFeesUnits
+    : 0n;
 }

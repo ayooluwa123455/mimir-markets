@@ -27,6 +27,7 @@ import {
   type FeedSourceMetadata,
   type VersionedMarketFeedResponse,
 } from "./schema";
+import type { ApiRecoveryAction } from "./schema";
 
 export type ApiErrorCode =
   // ── 400: the caller must change the request ──
@@ -48,6 +49,8 @@ export type ApiErrorCode =
   // ── 404/409 ──
   | "not_found"
   | "conflict"
+  // ── 412/304: conditional request outcomes ──
+  | "precondition_failed"
   // ── 429: slow down ──
   | "rate_limited"
   | "budget_exhausted"
@@ -61,13 +64,14 @@ interface ErrorSpec {
   retryable: boolean;
   /** Suggested wait before a retry, seconds. Only meaningful when retryable. */
   retryAfterSeconds?: number;
+  recoveryAction?: ApiRecoveryAction;
 }
 
 const SPECS: Record<ApiErrorCode, ErrorSpec> = {
   // A malformed or unauthorised request is not a transient condition. Marking
   // these retryable is how a fleet of agents turns one bug into a DoS.
   invalid_request: { status: 400, retryable: false },
-  invalid_signature: { status: 400, retryable: false },
+  invalid_signature: { status: 400, retryable: false, recoveryAction: "reconnect_wallet" },
   unsupported_version: { status: 400, retryable: false },
   // Oversized signed payloads are not transient — shrink the body and resend.
   payload_too_large: { status: 413, retryable: false },
@@ -81,28 +85,30 @@ const SPECS: Record<ApiErrorCode, ErrorSpec> = {
   unauthenticated: { status: 401, retryable: false },
   nonce_reused: { status: 401, retryable: false },
   // A fresh request WOULD work, so this one is retryable — with a new timestamp.
-  request_expired: { status: 401, retryable: true, retryAfterSeconds: 0 },
+  request_expired: { status: 401, retryable: true, retryAfterSeconds: 0, recoveryAction: "refresh_request" },
   forbidden: { status: 403, retryable: false },
   capability_missing: { status: 403, retryable: false },
   agent_revoked: { status: 403, retryable: false },
   // Paused is an operator action that can be undone, unlike revoked.
-  agent_paused: { status: 403, retryable: true, retryAfterSeconds: 300 },
+  agent_paused: { status: 403, retryable: true, retryAfterSeconds: 300, recoveryAction: "retry_later" },
 
   not_found: { status: 404, retryable: false },
   conflict: { status: 409, retryable: false },
 
-  rate_limited: { status: 429, retryable: true, retryAfterSeconds: 60 },
+  rate_limited: { status: 429, retryable: true, retryAfterSeconds: 60, recoveryAction: "retry_later" },
   // A budget refills on a window boundary, so it is retryable but not soon.
-  budget_exhausted: { status: 429, retryable: true, retryAfterSeconds: 3_600 },
+  budget_exhausted: { status: 429, retryable: true, retryAfterSeconds: 3_600, recoveryAction: "retry_later" },
 
-  upstream_unavailable: { status: 503, retryable: true, retryAfterSeconds: 30 },
-  internal_error: { status: 500, retryable: true, retryAfterSeconds: 5 },
+  upstream_unavailable: { status: 503, retryable: true, retryAfterSeconds: 30, recoveryAction: "retry_later" },
+  internal_error: { status: 500, retryable: true, retryAfterSeconds: 5, recoveryAction: "retry_later" },
 };
 
 export interface ApiError extends ApiErrorShape {
   error: ApiErrorShape["error"] & {
     retryable: boolean;
     retryAfterSeconds?: number;
+    /** Optional advice. Does not authorize retries, reconnect wallets, or sign. */
+    recoveryAction?: ApiRecoveryAction;
     /** Field that caused a validation failure, when there is one. */
     field?: string;
     /**
@@ -115,12 +121,32 @@ export interface ApiError extends ApiErrorShape {
      */
     trace_id?: string;
     /**
-     * Structured source availability metadata attached when an upstream or
-     * read-index read fails, so callers can distinguish an unavailable source
-     * from an empty dataset.
+     * Observation freshness of the data behind this response, when the route
+     * serves market observations. Uses the same shared shape as success responses
+     * (see `lib/api/schema.ts`), so clients read freshness identically everywhere.
      */
-    sourceMeta?: FeedSourceMetadata;
+    freshness?: ObservationFreshness;
   };
+}
+
+/**
+ * Shared observation-freshness descriptor, attached to feed, detail and
+ * performance responses (and error bodies that serve observations).
+ *
+ * - `ledger`: trusted ledger sequence the observation was read at.
+ * - `observed_at`: ISO-8601 time the observation was taken.
+ * - `known_gaps`: explicit, machine-readable gap descriptors; empty when none.
+ */
+export interface ObservationFreshness {
+  ledger: number;
+  observed_at: string;
+  known_gaps: ObservationGap[];
+}
+
+export interface ObservationGap {
+  from_ledger: number;
+  to_ledger: number;
+  reason: string;
 }
 
 export interface ApiErrorResult {
@@ -143,7 +169,7 @@ export function apiError(
     field?: string;
     retryAfterSeconds?: number;
     requestId?: string;
-    sourceMeta?: FeedSourceMetadata;
+    freshness?: ObservationFreshness;
   } = {},
 ): ApiErrorResult {
   const spec = SPECS[code];
@@ -154,9 +180,10 @@ export function apiError(
       ...base.error,
       retryable: spec.retryable,
       ...(retryAfter !== undefined ? { retryAfterSeconds: retryAfter } : {}),
+      ...(spec.recoveryAction !== undefined ? { recoveryAction: spec.recoveryAction } : {}),
       ...(opts.field ? { field: opts.field } : {}),
       ...(opts.requestId ? { requestId: opts.requestId } : {}),
-      ...(opts.sourceMeta ? { sourceMeta: opts.sourceMeta } : {}),
+      ...(opts.freshness ? { freshness: cloneFreshness(opts.freshness) } : {}),
     },
   };
   const headers: Record<string, string> = {};
@@ -177,180 +204,18 @@ export function apiError(
 }
 
 /**
- * Build a 503 `upstream_unavailable` error carrying deterministic
- * unavailable-source metadata. Used when a read-index or upstream contract read
- * fails and no verified fallback snapshot exists, so the failure never turns
- * into a misleading `200` empty data response.
+ * Copy a freshness descriptor so callers cannot mutate a shared object after the
+ * response has been built.
  */
-export function upstreamUnavailableError(
-  message = "Market read-index is unavailable; retry later",
-  opts: {
-    source?: FeedSourceKind;
-    reason?: FeedSourceFailureReason;
-    updatedAtMs?: number | null;
-    freshnessWindowMs?: number;
-    nowMs?: number;
-    retryAfterSeconds?: number;
-    requestId?: string;
-  } = {},
-): ApiErrorResult {
-  const sourceMeta = unavailableFeedSourceMetadata({
-    source: opts.source,
-    reason: opts.reason ?? "read_index_unavailable",
-    updatedAtMs: opts.updatedAtMs,
-    freshnessWindowMs: opts.freshnessWindowMs,
-    nowMs: opts.nowMs,
-  });
-  return apiError("upstream_unavailable", message, {
-    retryAfterSeconds: opts.retryAfterSeconds,
-    requestId: opts.requestId,
-    sourceMeta,
-  });
-}
-
-export type ReadIndexQueryInput<T> =
-  | {
-      ok: true;
-      items: readonly T[];
-      updatedAtMs?: number | null;
-      nextCursor?: number | null;
-      source?: FeedSourceKind;
-      freshnessWindowMs?: number;
-      nowMs?: number;
-    }
-  | {
-      ok: false;
-      message?: string;
-      reason?: FeedSourceFailureReason;
-      source?: FeedSourceKind;
-      freshnessWindowMs?: number;
-      nowMs?: number;
-      retryAfterSeconds?: number;
-      requestId?: string;
-      /**
-       * Optional previously-verified snapshot to serve in degraded/stale mode.
-       * When omitted (or when `updatedAtMs` is null and `items` is empty),
-       * the failed read-index query refuses with `503 upstream_unavailable`
-       * rather than fabricating a `200` empty feed.
-       */
-      fallback?: {
-        items: readonly T[];
-        updatedAtMs: number | null;
-        nextCursor?: number | null;
-      } | null;
-    };
-
-export type ReadIndexFeedBoundaryResult<T> =
-  | {
-      ok: true;
-      status: 200;
-      degraded: boolean;
-      body: VersionedMarketFeedResponse<T>;
-      headers: Record<string, string>;
-    }
-  | {
-      ok: false;
-      status: number;
-      degraded: true;
-      body: ApiError;
-      headers: Record<string, string>;
-      error: ApiErrorResult;
-    };
-
-/**
- * Resolve a read-index query at the API boundary without turning a failed query
- * into misleading successful empty data:
- *
- *  - **Healthy query (`ok: true`)**: returns 200 with `items` (including a
- *    legitimately empty `[]` when no markets exist yet) and `live` or `cached`
- *    (or `stale` if the index timestamp exceeded the stale threshold) source
- *    metadata.
- *  - **Failed query with a verified fallback snapshot**: returns 200 with the
- *    fallback items and explicit `status: "stale"`, `stale: true`,
- *    `degraded: true`, and `reason` metadata so callers know the feed is a stale
- *    fallback rather than a live read.
- *  - **Failed query without a verified fallback snapshot**: returns 503
- *    `upstream_unavailable` with `sourceMeta.status === "unavailable"` instead of
- *    a misleading 200 `{ items: [] }`.
- */
-export function resolveReadIndexFeed<T>(
-  input: ReadIndexQueryInput<T>,
-): ReadIndexFeedBoundaryResult<T> {
-  if (input.ok) {
-    const cache = buildFeedSourceMetadata({
-      source: input.source ?? "index",
-      updatedAtMs: input.updatedAtMs ?? (input.nowMs ?? Date.now()),
-      freshnessWindowMs: input.freshnessWindowMs,
-      nowMs: input.nowMs,
-    });
-    const body = versionedMarketFeed({
-      items: input.items,
-      cache,
-      nextCursor: input.nextCursor,
-    });
-    return {
-      ok: true,
-      status: 200,
-      degraded: cache.degraded,
-      body,
-      headers: schemaVersionHeaders(),
-    };
-  }
-
-  const fallback = input.fallback;
-  const hasVerifiedFallback =
-    fallback !== null &&
-    fallback !== undefined &&
-    (fallback.items.length > 0 ||
-      (typeof fallback.updatedAtMs === "number" &&
-        Number.isFinite(fallback.updatedAtMs) &&
-        fallback.updatedAtMs > 0));
-
-  if (hasVerifiedFallback && fallback) {
-    const cache = staleFeedSourceMetadata({
-      source: input.source ?? "index",
-      updatedAtMs: fallback.updatedAtMs,
-      freshnessWindowMs: input.freshnessWindowMs,
-      nowMs: input.nowMs,
-      reason: input.reason ?? "read_index_query_failed",
-    });
-    const body = versionedMarketFeed({
-      items: fallback.items,
-      cache,
-      nextCursor: fallback.nextCursor,
-    });
-    return {
-      ok: true,
-      status: 200,
-      degraded: true,
-      body,
-      headers: schemaVersionHeaders(),
-    };
-  }
-
-  const error = upstreamUnavailableError(
-    input.message ?? "Market read-index is unavailable; retry later",
-    {
-      source: input.source ?? "index",
-      reason: input.reason ?? "read_index_unavailable",
-      updatedAtMs: fallback?.updatedAtMs ?? null,
-      freshnessWindowMs: input.freshnessWindowMs,
-      nowMs: input.nowMs,
-      retryAfterSeconds: input.retryAfterSeconds,
-      requestId: input.requestId,
-    },
-  );
-
+export function cloneFreshness(f: ObservationFreshness): ObservationFreshness {
   return {
-    ok: false,
-    status: error.status,
-    degraded: true,
-    body: error.body,
-    headers: {
-      ...schemaVersionHeaders(),
-      ...error.headers,
-    },
-    error,
+    ledger: f.ledger,
+    observed_at: f.observed_at,
+    known_gaps: f.known_gaps.map((g) => ({
+      from_ledger: g.from_ledger,
+      to_ledger: g.to_ledger,
+      reason: g.reason,
+    })),
   };
 }
 
@@ -380,6 +245,7 @@ export interface ApiErrorSpec {
   status: number;
   retryable: boolean;
   retryAfterSeconds?: number;
+  recoveryAction?: ApiRecoveryAction;
 }
 
 /**
@@ -400,6 +266,7 @@ export function apiErrorCatalogue(): ApiErrorSpec[] {
       status: spec.status,
       retryable: spec.retryable,
       ...(spec.retryAfterSeconds !== undefined ? { retryAfterSeconds: spec.retryAfterSeconds } : {}),
+      ...(spec.recoveryAction !== undefined ? { recoveryAction: spec.recoveryAction } : {}),
     };
   });
 }

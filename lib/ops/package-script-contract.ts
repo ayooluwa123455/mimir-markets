@@ -47,6 +47,11 @@ export interface ReviewedScriptSpec {
  */
 export const REVIEWED_PACKAGE_SCRIPTS: Readonly<Record<string, ReviewedScriptSpec>> = Object.freeze({
   // App lifecycle
+  "market-creator:manifest": {
+    command: "tsx scripts/market-creator-manifest.ts",
+    category: "worker",
+    supportsArgForwarding: true,
+  },
   dev: { command: "next dev", category: "app", supportsArgForwarding: true },
   "dev:clean": { command: "rm -rf .next && next dev", category: "app", supportsArgForwarding: false },
   clean: { command: "rm -rf .next", category: "app", supportsArgForwarding: false },
@@ -174,6 +179,16 @@ export const REVIEWED_PACKAGE_SCRIPTS: Readonly<Record<string, ReviewedScriptSpe
     category: "test",
     supportsArgForwarding: true,
   },
+  "oracle:compare": {
+    command: "tsx scripts/oracle-policy-compare.ts",
+    category: "test",
+    supportsArgForwarding: true,
+  },
+  "oracle:policy-compare": {
+    command: "tsx scripts/oracle-policy-compare.ts",
+    category: "test",
+    supportsArgForwarding: true,
+  },
   "test:schema": {
     command:
       "node --import tsx --test tests/node/schema-backlog.test.ts tests/node/schema-snapshot.test.ts",
@@ -203,6 +218,11 @@ export const REVIEWED_PACKAGE_SCRIPTS: Readonly<Record<string, ReviewedScriptSpe
   },
 
   // Release, security & verification gates
+  prepack: {
+    command: "node scripts/check-tracked-path-case.mjs",
+    category: "release",
+    supportsArgForwarding: false,
+  },
   "sbom:release": {
     command: "node scripts/generate-release-sbom.mjs",
     category: "release",

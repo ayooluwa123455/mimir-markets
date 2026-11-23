@@ -2,13 +2,14 @@
 
 use soroban_sdk::{Address, Env, String, Vec};
 
+use crate::claim_history;
 use crate::escrow;
 use crate::events;
 use crate::fees;
 use crate::storage;
 use crate::types::{
-    Challenger, Claim, ClaimState, CreateParams, Error, FeeSnapshot, MarketConfig, WinnerSide,
-    BPS_DIVISOR, CHALLENGE_LOCK_SECONDS, DEFAULT_PAYOUT_BPS, MAX_CHALLENGERS, MIN_STAKE,
+    Challenger, Claim, ClaimState, CreateParams, Error, FeeSnapshot, MarketConfig, TransitionKind,
+    WinnerSide, BPS_DIVISOR, CHALLENGE_LOCK_SECONDS, DEFAULT_PAYOUT_BPS, MAX_CHALLENGERS, MIN_STAKE,
 };
 use crate::util;
 
@@ -168,6 +169,7 @@ pub fn create_claim(env: &Env, creator: Address, params: CreateParams) -> Result
         challenger_claims: 0,
         revision: 1,
         created_at: env.ledger().timestamp(),
+        revision: 1,
         evidence_hash: None,
         context_hash: params.context_hash,
         market: MarketConfig {
@@ -186,7 +188,7 @@ pub fn create_claim(env: &Env, creator: Address, params: CreateParams) -> Result
     let category = claim.category.clone();
     storage::set_claim(env, id, &claim);
     storage::set_challengers(env, id, &Vec::new(env));
-    creator_index_append(env, &creator, id);
+    storage::append_creator_claim(env, &creator, id);
 
     events::EscrowSeeded {
         id,
@@ -326,8 +328,19 @@ pub fn challenge_claim(
     claim.total_challenger_stake = next_total_challenger_stake;
     claim.challenger_count = next_challenger_count;
     claim.state = ClaimState::Active;
+    claim.revision = claim.revision.checked_add(1).ok_or(Error::Overflow)?;
     util::assert_claim_conservation(&claim)?;
     storage::set_claim(env, claim_id, &claim);
+    claim_history::record(
+        env,
+        claim_id,
+        TransitionKind::Challenged,
+        prev_state,
+        ClaimState::Active,
+        Some(challenger.clone()),
+        stake_amount,
+        WinnerSide::None,
+    )?;
 
     events::EscrowSeeded {
         id: claim_id,

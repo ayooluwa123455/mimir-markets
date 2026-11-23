@@ -9,6 +9,7 @@ import * as runnerModule from "../../scripts/run-node-tests.mjs";
 type SpawnLike = (command: string, args: string[], options: { cwd: string; env: Record<string, string>; stdio: string }) => { status: number | null; error?: Error };
 
 type RunnerOptions = {
+  nodeVersion?: string;
   argv?: string[];
   root?: string;
   sourceEnvironment?: NodeJS.ProcessEnv;
@@ -179,10 +180,9 @@ test("runner publishes a successful coverage report and creates a compile cache"
   const cacheRoot = path.join(root, "cache");
   const coverageDir = path.join(root, "coverage");
   try {
-    let invocation: { args: string[]; options: { env: Record<string, string> } } | undefined;
-    const spawn: SpawnLike = (_command: string, args: string[], options) => {
-      assert.equal(_command, process.execPath);
-      invocation = { args, options };
+    let invocation: { command: string; args: string[]; options: { env: Record<string, string> } } | undefined;
+    const spawn: SpawnLike = (command: string, args: string[], options) => {
+      invocation = { command, args, options };
       const destination = args.find((arg) => arg.startsWith("--test-reporter-destination=") && arg !== "--test-reporter-destination=stdout");
       assert.ok(destination);
       writeFileSync(destination.slice("--test-reporter-destination=".length), "TN:\nSF:lib/example.ts\n");
@@ -196,6 +196,7 @@ test("runner publishes a successful coverage report and creates a compile cache"
     });
     assert.equal(status, 0);
     assert.ok(invocation);
+    assert.equal(invocation.command, process.execPath);
     assert.equal(readFileSync(path.join(coverageDir, "node-tests.lcov"), "utf8"), "TN:\nSF:lib/example.ts\n");
     assert.equal(invocation.options.env.NODE_ENV, "test");
     assert.equal(invocation.options.env.NODE_COMPILE_CACHE.startsWith(cacheRoot), true);
@@ -205,4 +206,28 @@ test("runner publishes a successful coverage report and creates a compile cache"
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("an unsupported runtime reports the engine range before selecting or launching tests", () => {
+  assert.throws(() => runNodeTests({
+    nodeVersion: "21.9.0",
+    argv: ["no-such-test-file"],
+    spawn: () => assert.fail("unexpected test launch"),
+  }), /Detected Node\.js 21\.9\.0.*requires >=22\.0\.0.*nvm use/);
+});
+
+test("the minimum supported runtime reaches the child launcher", () => {
+  let launched = false;
+  const status = runNodeTests({
+    nodeVersion: "22.0.0",
+    argv: ["--no-cache", "node-test-runner.test.ts"],
+    spawn: (_command: string, args: string[]) => {
+      launched = true;
+      assert.ok(args.some((arg) => arg.endsWith("node-test-runner.test.ts")));
+      assert.ok(!args.includes("--experimental-test-isolation=process"));
+      return { status: 0 };
+    },
+  });
+  assert.ok(launched);
+  assert.equal(status, 0);
 });

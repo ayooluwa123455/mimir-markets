@@ -1,6 +1,6 @@
 # Mimir Contract Errors Reference
 
-This document provides a comprehensive reference of all error codes returned by the Mimir Soroban smart contracts (`mimir-market` and `mimir-squad`).
+This document provides a comprehensive reference of all error codes returned by the Mimir Soroban smart contracts (`mimir-market` and `mimir-squad`). Stale approved fee-policy changes are rejected with the typed `StaleFeePolicyRevision` error (`mimir-market`), preserving the active policy and all balances.
 
 ## Overview
 
@@ -20,7 +20,7 @@ Client SDKs and UI applications can map these numeric error codes or their varia
 | Code | Name | Contract | Entry Points | Cause | Remediation |
 | ---: | :--- | :--- | :--- | :--- | :--- |
 | 1 | `AlreadyInitialized` | `mimir-market` | `initialize` | Contract initialization was called when the contract was already initialized. | No action needed; initialization is a one-time operation. Do not re-initialize an existing market contract. |
-| 2 | `NotInitialized` | `mimir-market` | `get_claim`, `get_claims_batch`, `get_claim_market_config`, `get_claim_fees`, `get_verdict`, `get_verdict_side`, `get_fee_policy`, `get_owner`, `get_oracle`, `get_usdc`, `get_platform_stats` | Contract entry point was called before `initialize` has been executed. | Call `initialize` with valid configuration addresses and parameters before invoking other methods. |
+| 2 | `NotInitialized` | `mimir-market` | `get_claim`, `get_claims_batch`, `get_claim_market_config`, `get_claim_fees`, `get_verdict`, `get_verdict_side`, `get_fee_policy`, `get_owner`, `get_oracle`, `get_usdc`, `get_platform_stats`, `get_fee_liability_summary`, `get_fee_liabilities`, `get_fee_liability_by_class` | Contract entry point was called before `initialize` has been executed. | Call `initialize` with valid configuration addresses and parameters before invoking other methods. |
 | 3 | `NotOwner` | `mimir-market` | `transfer_ownership`, `queue_fee_policy`, `cancel_fee_policy` | Transaction caller is not the contract owner (admin actions require owner authorization). | Sign and submit the transaction with the contract owner account. |
 | 4 | `NotOracle` | `mimir-market` | `resolve_claim`, `resolve_claim_versioned`, `queue_oracle`, `cancel_oracle` | Transaction caller is not the configured oracle address. | Ensure the call is authorized by the oracle address configured in `get_oracle()`. |
 | 5 | `FeeCapExceeded` | `mimir-market` | `initialize`, `queue_fee_policy` | Combined platform and agent owner fee bps exceeds `MAX_TOTAL_FEE_BPS` (1,000 bps = 10%). | Set fee parameters such that `platform_fee_bps + agent_owner_fee_bps <= 1000`. |
@@ -30,7 +30,7 @@ Client SDKs and UI applications can map these numeric error codes or their varia
 | 9 | `StakeTooSmall` | `mimir-market` | `create_claim`, `challenge_claim` | Stake amount is below the required `MIN_STAKE` (2 USDC = 20,000,000 atomic units). | Increase stake to at least 2 USDC (20,000,000 stroops/units). |
 | 10 | `DeadlineInPast` | `mimir-market` | `create_claim` | Market deadline timestamp is less than or equal to current ledger timestamp. | Provide a future unix timestamp for the market resolution deadline. |
 | 11 | `EmptyQuestion` | `mimir-market` | `create_claim` | The claim question string is empty. | Provide a non-empty question string describing the market proposition. |
-| 12 | `ClaimNotFound` | `mimir-market` | `get_claim`, `get_claim_market_config`, `get_claim_fees`, `get_verdict`, `get_verdict_side`, `quote_challenger_payout`, `challenge_claim`, `resolve_claim`, `resolve_claim_versioned`, `transition_deadline`, `cancel_claim`, `claim_challenger_payout` | No market claim exists for the given `claim_id`. | Check the claim ID and verify the claim was created successfully. |
+| 12 | `ClaimNotFound` | `mimir-market` | `get_claim`, `get_claim_statement`, `export_claim_statement`, `get_claim_statement_digest`, `get_claim_market_config`, `get_claim_fees`, `get_verdict`, `get_verdict_side`, `quote_challenger_payout`, `challenge_claim`, `resolve_claim`, `resolve_claim_versioned`, `transition_deadline`, `cancel_claim`, `claim_challenger_payout` | No market claim exists for the given `claim_id`. | Check the claim ID and verify the claim was created successfully. |
 | 13 | `ClaimNotOpen` | `mimir-market` | `challenge_claim`, `transition_deadline`, `cancel_claim` | Operation requires `ClaimState::Open`, but the claim is in a different state (Active, Resolved, or Cancelled). | Check `get_claim(claim_id).state`; challenges and creator cancellations are only allowed while open. |
 | 14 | `SelfChallenge` | `mimir-market` | `challenge_claim` | The creator attempted to challenge their own claim. | A challenge must come from a different wallet address than the creator address. |
 | 15 | `AlreadyChallenged` | `mimir-market` | `challenge_claim` | The account has already submitted a challenge for this claim when duplicate challenges are restricted. | Use another account or wait for new challenge opportunities on other claims. |
@@ -64,8 +64,10 @@ Client SDKs and UI applications can map these numeric error codes or their varia
 | 43 | `ParentClaimNotFound` | `mimir-market` | `create_claim` | Specified `parent_id` for rematch does not exist. | Provide a valid existing parent claim ID, or set `parent_id: 0` for non-rematch claims. |
 | 44 | `ParentClaimInvalidState` | `mimir-market` | `create_claim` | Parent claim is not in a settled state (`Resolved` or `Cancelled`). | Wait for the parent claim to be resolved or cancelled before initiating a rematch. |
 | 45 | `ParentClaimAlreadyRematched` | `mimir-market` | `create_claim` | A rematch claim has already been linked to this parent claim ID. | A parent claim can only have one rematch child; create an independent new claim instead. |
-| 46 | `BatchTooLarge` | `mimir-market` | `get_claims_batch` | Batch query requested more than `MAX_BATCH_SIZE` (50) claim IDs in a single call. | Chunk batch requests into batches of 50 IDs or fewer. |
+| 46 | `BatchTooLarge` | `mimir-market` | `get_claims_batch`, `get_withdrawable_batch` | Batch query requested more than `MAX_BATCH_SIZE` (50) claim IDs or addresses in a single call. | Chunk batch requests into batches of 50 IDs or addresses or fewer. |
 | 47 | `ConservationViolation` | `mimir-market` | `create_claim`, `challenge_claim`, `resolve_claim`, `resolve_claim_versioned`, `cancel_claim`, `claim_challenger_payout` | State transition violated an accounting invariant (negative balances or liability > stake). | Invariant protection triggered to safeguard funds; audit state and report issue. |
+| 50 | `UnsupportedRoundingPolicyVersion` | `mimir-market` | `quote_payout_versioned`, `claim_payout_versioned` | Required payout rounding policy is not version 1. | Read the supported policy version and refresh the preview/client; no payout or state change occurs. See [Payout rounding policy](PAYOUT_ROUNDING_POLICY.md). |
+| 49 | `Paused` | `mimir-market` | `transfer_ownership` | The existing withdrawal pause guard refused ownership transfer. | Wait for the operator to clear the pause before changing ownership; funded withdrawal paths remain available. |
 | 1 | `AlreadyInitialized` | `mimir-squad` | `initialize` | Squad pool was already initialized. | No action needed; initialization is one-time only. |
 | 2 | `NotInitialized` | `mimir-squad` | `deposit`, `withdraw_before_deadline`, `claim`, `claim_parked_payout`, `claim_fees`, `queue_oracle`, `execute_oracle`, `get_usdc`, `get_oracle`, `get_fee_recipient`, `get_escrow_balance` | Squad pool entry point called before `initialize`. | Call `initialize` with required USDC token, oracle, and fee recipient addresses before interacting. |
 | 3 | `ZeroAddress` | `mimir-squad` | `initialize`, `create_market` | Address argument was null or zero address. | Provide a valid, non-zero Stellar contract or account address. |
@@ -98,5 +100,13 @@ Client SDKs and UI applications can map these numeric error codes or their varia
 | 30 | `AlreadyResolved` | `mimir-squad` | `cancel_market` | Attempted to cancel a market that has already been resolved or cancelled. | Resolved markets cannot be cancelled; participants can withdraw funds via `claim`. |
 | 31 | `NothingQueued` | `mimir-squad` | `cancel_oracle`, `execute_oracle` | Attempted to cancel or execute an oracle rotation when none was queued. | Queue an oracle change using `queue_oracle` before attempting to cancel or execute. |
 | 32 | `Timelocked` | `mimir-squad` | `execute_oracle` | Oracle timelock period (2 days) has not elapsed since queuing. | Wait until the 2-day timelock has elapsed after `queue_oracle` before calling `execute_oracle`. |
+| 33 | `BatchTooLarge` | `mimir-squad` | `get_markets_batch` | Batch read exceeds the supported ID limit. | Split the request into batches within `MAX_BATCH_SIZE`. |
+| 34 | `NoFeeRecipientQueued` | `mimir-squad` | `cancel_fee_recipient`, `execute_fee_recipient` | No fee-recipient rotation is queued. | Queue a recipient change before cancellation or execution. |
+| 35 | `UnsupportedManifestVersion` | `mimir-squad` | Settlement manifest validation | The requested settlement manifest version is unsupported. | Use the manifest version supported by the contract. |
+| 36 | `ManifestDigestMismatch` | `mimir-squad` | Settlement manifest validation | The supplied manifest digest does not match the bound market state. | Refresh the market snapshot and regenerate the manifest before submitting. |
 
-| 48 | `StaleClaimRevision` | `mimir-market` | `challenge_claim`, `resolve_claim`, `resolve_claim_versioned`, `cancel_claim`, `transition_deadline` | Mutation was reviewed against an obsolete claim revision: the caller's expected claim revision no longer matches the current on-chain claim state. No claim or transferred amounts are modified. | Re-read `get_claim(claim_id)` to obtain the current revision and state, re-review the claim, then resubmit the mutation with the updated expected revision. |
+Upstream reserves error **48** (`StaleClaimRevision`) for expected claim revision
+conflicts. Its guard and enum variant are not implemented in the current market
+sources; it is not an emitted error yet. Re-read and review the claim before
+resubmitting a mutation once that guard is implemented. Rounding-policy failures
+use **50**, keeping the upstream reservation available.

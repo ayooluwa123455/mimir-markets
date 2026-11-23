@@ -239,6 +239,13 @@ paths:
                       requiredAtomic: "250000000"
                       sufficient: true
                       source: spendable_usdc_balance
+                    sizing:
+                      policyVersion: "1"
+                      rounding: truncate_toward_zero
+                      principalAtomic: "250000000"
+                      grossPayoutAtomic: "500000000"
+                      principalRemainderUsdc: 0
+                      grossPayoutRemainderUsdc: 0
                     payout:
                       principalUsdc: 25
                       grossProfitUsdc: 25
@@ -282,6 +289,7 @@ paths:
             - invalid_request
             - invalid_signature
             - unsupported_version
+            - invalid_cursor
           content:
             "application/json":
               examples:
@@ -301,6 +309,7 @@ paths:
                       code: invalid_signature
                       message: signature rejected
                       retryable: false
+                      recoveryAction: reconnect_wallet
                 unsupported_version:
                   summary: "Not retryable: repeating the identical request cannot succeed. A fresh nonce and timestamp will not help either."
                   x-mimir-error-code: unsupported_version
@@ -308,6 +317,14 @@ paths:
                     error:
                       code: unsupported_version
                       message: "unsupported version; only v1 is served"
+                      retryable: false
+                invalid_cursor:
+                  summary: "Not retryable: repeating the identical request cannot succeed. A fresh nonce and timestamp will not help either."
+                  x-mimir-error-code: invalid_cursor
+                  value:
+                    error:
+                      code: invalid_cursor
+                      message: pagination cursor does not match this request
                       retryable: false
         "401":
           description: "Invalid signature, a replayed or expired envelope (nonce_reused, request_expired), or a bad API key."
@@ -343,6 +360,7 @@ paths:
                       message: signed timestamp outside allowed window
                       retryable: true
                       retryAfterSeconds: 0
+                      recoveryAction: refresh_request
         "403":
           description: "Capability, authority, budget, feature flag, revocation or incident pause rejected the action."
           x-mimir-error-codes:
@@ -386,6 +404,7 @@ paths:
                       message: stake is temporarily paused
                       retryable: true
                       retryAfterSeconds: 300
+                      recoveryAction: retry_later
                       capability: stake
                       viaGlobal: false
                       env: MIMIR_PAUSE_STAKE
@@ -462,6 +481,7 @@ paths:
                       message: Rate limit exceeded
                       retryable: true
                       retryAfterSeconds: 60
+                      recoveryAction: retry_later
                   x-mimir-response-headers:
                     retry-after: "60"
                 budget_exhausted:
@@ -473,6 +493,7 @@ paths:
                       message: "period allowance exhausted; wait for the next period"
                       retryable: true
                       retryAfterSeconds: 3600
+                      recoveryAction: retry_later
                   x-mimir-response-headers:
                     retry-after: "3600"
         "500":
@@ -491,6 +512,7 @@ paths:
                       message: internal error
                       retryable: true
                       retryAfterSeconds: 5
+                      recoveryAction: retry_later
                   x-mimir-response-headers:
                     retry-after: "5"
         "503":
@@ -509,6 +531,7 @@ paths:
                       message: "dependency unavailable; retry later"
                       retryable: true
                       retryAfterSeconds: 30
+                      recoveryAction: retry_later
                   x-mimir-response-headers:
                     retry-after: "30"
       x-mimir-actions:
@@ -641,6 +664,7 @@ components:
                 - unsupported_version
                 - payload_too_large
                 - idempotency_conflict
+                - invalid_cursor
                 - unauthenticated
                 - nonce_reused
                 - request_expired
@@ -661,6 +685,13 @@ components:
             retryable:
               type: boolean
               description: False when repeating the identical request can never succeed.
+            recoveryAction:
+              type: string
+              enum:
+                - refresh_request
+                - reconnect_wallet
+                - retry_later
+              description: "Advisory recovery action; does not change retryable or authorize an operation."
             retryAfterSeconds:
               type: number
               description: Present only when waiting can help.
@@ -678,6 +709,7 @@ components:
                 - agent_registration
                 - market_creator_worker
                 - council_worker
+                - trader_worker
                 - oracle_settlement
                 - research
               description: "agent_paused only: the switch that stopped this action."

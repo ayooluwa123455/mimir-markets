@@ -83,7 +83,7 @@ function verdictOf(scope, tiers) {
 
 const tsRaw = (() => {
   const script = [
-    "import { scopeOf } from './lib/ci/path-scope.ts';",
+    "const { scopeOf } = require('./lib/ci/path-scope.ts');",
     `const corpus = ${JSON.stringify(corpus)};`,
     "const verdicts = {};",
     "for (const p of corpus) {",

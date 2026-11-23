@@ -21,6 +21,10 @@ Every market mutation event for a claim carries an explicit `revision` field (u3
 - Rejected or reverted invocations do not change the stored revision, state, or escrow.
 - Indexers can use `revision` to detect gaps and order events for the same claim without relying on ledger sequence alone.
 
+## Claim Transition History
+
+Events are not the only record of a claim's lifecycle. `mimir-market` also stores each successful transition (create, each challenge, resolve, cancel, deadline expiry) on chain under a stable identity `(claim_id, seq)` and serves it through the bounded, cursor-paginated view `get_claim_history(claim_id, cursor, limit)`. A page costs O(page), never O(challengers), and reports incomplete history explicitly (`next_cursor`, `from_genesis`, `missing_seq`). Indexers can use it to backfill or verify a claim's transitions without replaying every event. See [`CLAIM_HISTORY.md`](CLAIM_HISTORY.md).
+
 ## mimir-market Events
 
 ### Core Lifecycle Events
@@ -149,6 +153,7 @@ Emitted when liquidity is deposited into a pool market.
 - `amount`: USDC amount added
 - `new_pool_total`: Pool total after this deposit
 - `shares_issued`: Shares issued to depositor (equals amount in squad v1)
+- `market_revision`: Squad market revision after this mutation
 
 **Emitted by:**
 - `deposit`: Every liquidity addition to either side
@@ -164,6 +169,7 @@ Emitted when liquidity is withdrawn from a pool market before resolution.
 - `amount`: USDC amount withdrawn
 - `new_pool_total`: Pool total after this withdrawal
 - `shares_burned`: Shares burned from withdrawer (equals amount in squad v1)
+- `market_revision`: Squad market revision after this mutation
 
 **Emitted by:**
 - `withdraw_before_deadline`: Pre-deadline withdrawals only
@@ -178,6 +184,7 @@ Emitted when the captain cancels a market before its deadline.
 - `captain` (topic): Captain who cancelled
 - `pool_a`: Side A pool at cancellation (kept for the audit trail)
 - `pool_b`: Side B pool at cancellation
+- `market_revision`: Squad market revision after this mutation
 
 **Emitted by:**
 - `cancel_market`: only before the deadline; seeds `remaining_escrow = pool_a + pool_b` so every depositor can pull a full refund through `claim`
@@ -190,6 +197,7 @@ Emitted when a payout cannot be delivered (frozen or deauthorized trustline) and
 - `side` (topic): Side claimed
 - `participant` (topic): Winner whose payout was parked
 - `amount`: Net amount parked
+- `market_revision`: Squad market revision after this mutation
 
 #### SquadFull
 Emitted on the deposit that fills the squad to `MAX_SQUAD_MEMBERS`.
@@ -197,6 +205,7 @@ Emitted on the deposit that fills the squad to `MAX_SQUAD_MEMBERS`.
 **Fields:**
 - `market_id` (topic): Market ID
 - `total_members`: Members across both sides
+- `market_revision`: Squad market revision after this mutation
 
 #### OracleQueued / OracleCancelled / OracleChanged
 Oracle rotation timelock: `queue_oracle` (topic `next`, `executable_at`), `cancel_oracle` (`cancelled`), `execute_oracle` (topic `next`, `previous`).
@@ -242,6 +251,10 @@ Emitted when a queued rotation is executed after the timelock.
 
 **Usage:** Indexers use this event to update the active fee recipient and to reconcile fee claims against the correct recipient.
 
+### Market Revision
+
+Squad markets carry a monotonic `market_revision`. It increments only after a successful state-changing mutation (deposit, withdrawal, cancellation, resolution, claim, parked payout, or fee claim). A rejected invocation leaves the revision unchanged. Mutation events that change market state include the post-mutation `market_revision` field, so indexers can order events and detect gaps without re-reading contract state.
+
 ### Existing Events Enhanced
 
 The following existing events work with lifecycle events:
@@ -260,10 +273,10 @@ For the full state diagram, the caller/authority matrix, and the refund rules fo
 ### For Indexers
 
 1. **State Tracking**: Use `ClaimStateTransitioned` and `MarketStateTransitioned` as the source of truth for lifecycle state
-2. **Revision Ordering**: Use the claim `revision` field to order and deduplicate mutation events for the same claim
-3. **Conservation Checks**: Sum `EscrowSeeded` amounts and verify against payouts and remaining escrow
-4. **Deadline Monitoring**: Listen to `DeadlineReached` and `MarketDeadlineReached` to identify claims needing oracle attention
-5. **Pool Analytics**: Track `LiquidityAdded` and `LiquidityRemoved` for TVL, liquidity depth charts, and participation patterns
+2. **Conservation Checks**: Sum `EscrowSeeded` amounts and verify against payouts and remaining escrow
+3. **Deadline Monitoring**: Listen to `DeadlineReached` and `MarketDeadlineReached` to identify claims needing oracle attention
+4. **Pool Analytics**: Track `LiquidityAdded` and `LiquidityRemoved` for TVL, liquidity depth charts, and participation patterns
+5. **Revision Ordering**: Use `market_revision` on squad mutation events, and the claim `revision` field on claim mutation events, to order and gap-check updates
 6. **Fee Recipient Rotation**: Track `FeeRecipientQueued`, `FeeRecipientCancelled`, and `FeeRecipientChanged` to know which address is entitled to accrued fees
 
 ### For Oracle Workers

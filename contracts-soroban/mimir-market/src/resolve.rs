@@ -20,6 +20,7 @@
 
 use soroban_sdk::{Address, BytesN, Env, String, Vec};
 
+use crate::claim_history;
 use crate::escrow;
 use crate::events;
 use crate::fees;
@@ -29,6 +30,21 @@ use crate::types::{
     WinnerSide,
 };
 use crate::util;
+
+/// Return the currently approved oracle resolution and claim expiration policy
+/// descriptor enforced by `claims` and `resolve`.
+pub fn resolution_expiration_policy() -> ResolutionExpirationPolicy {
+    ResolutionExpirationPolicy {
+        oracle_only_resolution: true,
+        challenge_lock_seconds: CHALLENGE_LOCK_SECONDS,
+        oracle_timelock_seconds: ORACLE_TIMELOCK_SECONDS,
+        resolution_expiry_seconds: RESOLUTION_EXPIRY_SECONDS,
+        open_claim_expiry_cancels: true,
+        active_claim_auto_expires: false,
+        verdict_version: VERDICT_VERSION_V1,
+        max_confidence: MAX_CONFIDENCE,
+    }
+}
 
 pub fn resolve_claim(
     env: &Env,
@@ -120,7 +136,8 @@ pub fn resolve_claim_versioned(
     confidence: u32,
     evidence_hash: BytesN<32>,
 ) -> Result<(), Error> {
-    storage::oracle(env)?.require_auth();
+    let oracle = storage::oracle(env)?;
+    oracle.require_auth();
 
     // Decode first: an unknown version must never be written, and `None` is not
     // a settled verdict. Both refusals leave the claim untouched.
@@ -158,7 +175,7 @@ pub fn resolve_claim_versioned(
     }
     .publish(env);
 
-    if confidence > 100 {
+    if confidence > MAX_CONFIDENCE {
         return Err(Error::InvalidConfidence);
     }
     // Bound the summary before any state is written. A claim created under the
@@ -246,7 +263,18 @@ pub fn resolve_claim_versioned(
     }
     .publish(env);
     
+    claim.revision = claim.revision.checked_add(1).ok_or(Error::Overflow)?;
     storage::set_claim(env, claim_id, &claim);
+    claim_history::record(
+        env,
+        claim_id,
+        TransitionKind::Resolved,
+        ClaimState::Active,
+        ClaimState::Resolved,
+        Some(oracle),
+        0,
+        winner_side,
+    )?;
     // Persist the verdict with its explicit version tag. `claim.winner_side`
     // remains the compatibility mirror for callers that read the claim struct.
     storage::set_verdict(env, claim_id, verdict);
@@ -492,7 +520,9 @@ pub fn claim_fees(env: &Env, who: Address) -> Result<i128, Error> {
     if amount <= 0 {
         return Ok(0);
     }
+    let (plat_part, owner_part) = storage::clear_accrued_class_fees(env, &who);
     storage::clear_accrued_fees(env, &who); // effects before interaction
+    storage::add_claimed_fees(env, &who, amount);
     storage::add_lifetime_fees_claimed(env, amount);
     storage::add_claimed_fees(env, &who, amount);
     let usdc = storage::usdc(env)?;

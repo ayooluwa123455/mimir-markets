@@ -305,6 +305,14 @@
             "sufficient": true,
             "source": "spendable_usdc_balance"
           },
+          "sizing": {
+            "policyVersion": "1",
+            "rounding": "truncate_toward_zero",
+            "principalAtomic": "20000000",
+            "grossPayoutAtomic": "40000000",
+            "principalRemainderUsdc": 0,
+            "grossPayoutRemainderUsdc": 0
+          },
           "payout": {
             "principalUsdc": 2,
             "grossProfitUsdc": 2,
@@ -345,6 +353,14 @@
             "requiredAtomic": "20000000",
             "sufficient": false,
             "source": "spendable_usdc_balance"
+          },
+          "sizing": {
+            "policyVersion": "1",
+            "rounding": "truncate_toward_zero",
+            "principalAtomic": "20000000",
+            "grossPayoutAtomic": "40000000",
+            "principalRemainderUsdc": 0,
+            "grossPayoutRemainderUsdc": 0
           },
           "payout": {
             "principalUsdc": 2,
@@ -560,6 +576,7 @@
       "code": "invalid_signature",
       "status": 400,
       "retryable": false,
+      "recoveryAction": "reconnect_wallet",
       "response": {
         "status": 400,
         "body": {
@@ -567,6 +584,7 @@
             "code": "invalid_signature",
             "message": "Fixture: invalid_signature",
             "retryable": false,
+            "recoveryAction": "reconnect_wallet",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -633,6 +651,25 @@
       }
     },
     {
+      "code": "invalid_cursor",
+      "status": 400,
+      "retryable": false,
+      "response": {
+        "status": 400,
+        "body": {
+          "error": {
+            "code": "invalid_cursor",
+            "message": "Fixture: invalid_cursor",
+            "retryable": false,
+            "trace_id": "mh_00000000000000000000000000000001"
+          }
+        },
+        "headers": {
+          "x-mimir-trace-id": "mh_00000000000000000000000000000001"
+        }
+      }
+    },
+    {
       "code": "unauthenticated",
       "status": 401,
       "retryable": false,
@@ -675,6 +712,7 @@
       "status": 401,
       "retryable": true,
       "retryAfterSeconds": 0,
+      "recoveryAction": "refresh_request",
       "response": {
         "status": 401,
         "body": {
@@ -683,6 +721,7 @@
             "message": "Fixture: request_expired",
             "retryable": true,
             "retryAfterSeconds": 0,
+            "recoveryAction": "refresh_request",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -753,6 +792,7 @@
       "status": 403,
       "retryable": true,
       "retryAfterSeconds": 300,
+      "recoveryAction": "retry_later",
       "response": {
         "status": 403,
         "body": {
@@ -761,6 +801,7 @@
             "message": "Fixture: agent_paused",
             "retryable": true,
             "retryAfterSeconds": 300,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -813,6 +854,7 @@
       "status": 429,
       "retryable": true,
       "retryAfterSeconds": 60,
+      "recoveryAction": "retry_later",
       "response": {
         "status": 429,
         "body": {
@@ -821,6 +863,7 @@
             "message": "Fixture: rate_limited",
             "retryable": true,
             "retryAfterSeconds": 60,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -835,6 +878,7 @@
       "status": 429,
       "retryable": true,
       "retryAfterSeconds": 3600,
+      "recoveryAction": "retry_later",
       "response": {
         "status": 429,
         "body": {
@@ -843,6 +887,7 @@
             "message": "Fixture: budget_exhausted",
             "retryable": true,
             "retryAfterSeconds": 3600,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -857,6 +902,7 @@
       "status": 503,
       "retryable": true,
       "retryAfterSeconds": 30,
+      "recoveryAction": "retry_later",
       "response": {
         "status": 503,
         "body": {
@@ -865,6 +911,7 @@
             "message": "Fixture: upstream_unavailable",
             "retryable": true,
             "retryAfterSeconds": 30,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -879,6 +926,7 @@
       "status": 500,
       "retryable": true,
       "retryAfterSeconds": 5,
+      "recoveryAction": "retry_later",
       "response": {
         "status": 500,
         "body": {
@@ -887,6 +935,7 @@
             "message": "Fixture: internal_error",
             "retryable": true,
             "retryAfterSeconds": 5,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -909,6 +958,7 @@
             "message": "Fixture: rate_limited",
             "retryable": true,
             "retryAfterSeconds": 0,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },
@@ -928,6 +978,7 @@
             "message": "Fixture: rate_limited",
             "retryable": true,
             "retryAfterSeconds": 2.2,
+            "recoveryAction": "retry_later",
             "trace_id": "mh_00000000000000000000000000000001"
           }
         },

@@ -28,31 +28,49 @@ use crate::types::{MAX_FEE_BPS, RESULT_CANCELLED, SIDE_A, SIDE_B};
 // Each fixture describes deposits, fee bps, and the expected per-participant
 // net payout. The Rust side asserts the contract produces those same numbers.
 
-/// One participant's deposit and expected net payout.
+/// One winning-side participant and the amount they staked.
 #[derive(Deserialize)]
-struct FixtureParticipant {
+#[serde(rename_all = "camelCase")]
+struct FixtureWinner {
+    #[allow(dead_code)]
+    participant: std::string::String,
     /// Deposit amount in stroops.
-    deposit: i128,
+    deposit_atomic: std::string::String,
+}
+
+/// One expected payout, in fixture order.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FixtureExpectation {
+    #[allow(dead_code)]
+    participant: std::string::String,
     /// Expected net payout in stroops (after fee, including dust absorption).
-    expected_net: i128,
+    net_atomic: std::string::String,
 }
 
 /// A single squad payout fixture.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SquadPayoutFixture {
-    /// Human-readable fixture name (matches the JSON file stem).
-    name: std::string::String,
+    #[allow(dead_code)]
+    description: std::string::String,
     /// Fee in basis points applied to winnings.
     fee_bps: u32,
-    /// Winning-side participants.
-    winners: std::vec::Vec<FixtureParticipant>,
-    /// Losing-side participants (their deposits form the losing pool).
-    losers: std::vec::Vec<FixtureParticipant>,
+    /// Winning-side participants, in claiming order.
+    winners: std::vec::Vec<FixtureWinner>,
+    /// Total staked on the losing side.
+    losing_pool_atomic: std::string::String,
+    /// Expected net payout per winner, in the same order as `winners`.
+    expected: std::vec::Vec<FixtureExpectation>,
 }
 
 /// Parse a fixture from its embedded JSON string.
 fn parse_fixture(json: &str) -> SquadPayoutFixture {
     serde_json::from_str(json).expect("fixture JSON must parse")
+}
+
+fn atomic(value: &str) -> i128 {
+    value.parse::<i128>().expect("fixture amount must be an integer")
 }
 
 /// Verify that `preview_claim` called immediately before `claim` predicts the
@@ -118,14 +136,16 @@ fn assert_fixture_matches_contract(fixture: &SquadPayoutFixture) {
     let id = f.market(&captain, fixture.fee_bps);
 
     let mut winners = Vec::new();
-    for p in fixture.winners.iter() {
-        let who = f.user(p.deposit);
-        f.client().deposit(&who, &id, &SIDE_A, &p.deposit);
+    for entry in fixture.winners.iter() {
+        let deposit = atomic(&entry.deposit_atomic);
+        let who = f.user(deposit);
+        f.client().deposit(&who, &id, &SIDE_A, &deposit);
         winners.push(who);
     }
-    for p in fixture.losers.iter() {
-        let who = f.user(p.deposit);
-        f.client().deposit(&who, &id, &SIDE_B, &p.deposit);
+    let losing = atomic(&fixture.losing_pool_atomic);
+    if losing > 0 {
+        let who = f.user(losing);
+        f.client().deposit(&who, &id, &SIDE_B, &losing);
     }
 
     f.advance_by(DEFAULT_DURATION);
@@ -133,73 +153,53 @@ fn assert_fixture_matches_contract(fixture: &SquadPayoutFixture) {
 
     // Claim in fixture order; the last claimant absorbs any dust.
     for (i, winner) in winners.iter().enumerate() {
+        let expected = atomic(&fixture.expected[i].net_atomic);
         let preview = f.client().preview_claim(&id, &SIDE_A, winner);
         assert_eq!(
-            preview.net, fixture.winners[i].expected_net,
-            "fixture '{}' winner #{} previewed net must match expected",
-            fixture.name, i
+            preview.net, expected,
+            "fixture winner #{i} previewed net must match expected"
         );
         let actual = f.client().claim(winner, &id, &SIDE_A);
         assert_eq!(
-            actual, fixture.winners[i].expected_net,
-            "fixture '{}' winner #{} claimed net must match expected",
-            fixture.name, i
+            actual, expected,
+            "fixture winner #{i} claimed net must match expected"
         );
     }
 
     assert_eq!(
         f.client().get_market(&id).remaining_escrow,
         0,
-        "fixture '{}' must fully drain escrow",
-        fixture.name
+        "fixture must fully drain escrow"
     );
 }
 
 #[test]
-fn fixture_parity_dust_single_winner() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/dust_single_winner.json");
+fn fixture_parity_dust_absorption() {
+    let json = include_str!("../../../tests/fixtures/squad-payouts/dust-absorption.json");
     assert_fixture_matches_contract(&parse_fixture(json));
 }
 
 #[test]
-fn fixture_parity_max_fee_many_winners() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/max_fee_many_winners.json");
+fn fixture_parity_max_fee() {
+    let json = include_str!("../../../tests/fixtures/squad-payouts/max-fee.json");
     assert_fixture_matches_contract(&parse_fixture(json));
 }
 
 #[test]
-fn fixture_parity_zero_fee_even_split() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/zero_fee_even_split.json");
+fn fixture_parity_single_winner() {
+    let json = include_str!("../../../tests/fixtures/squad-payouts/single-winner.json");
     assert_fixture_matches_contract(&parse_fixture(json));
 }
 
 #[test]
-fn fixture_parity_uneven_deposits() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/uneven_deposits.json");
+fn fixture_parity_standard_split() {
+    let json = include_str!("../../../tests/fixtures/squad-payouts/standard-split.json");
     assert_fixture_matches_contract(&parse_fixture(json));
 }
 
 #[test]
-fn fixture_parity_single_winner_max_fee() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/single_winner_max_fee.json");
-    assert_fixture_matches_contract(&parse_fixture(json));
-}
-
-#[test]
-fn fixture_parity_many_winners_small_stakes() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/many_winners_small_stakes.json");
-    assert_fixture_matches_contract(&parse_fixture(json));
-}
-
-#[test]
-fn fixture_parity_dust_absorption_last_claimant() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/dust_absorption_last_claimant.json");
-    assert_fixture_matches_contract(&parse_fixture(json));
-}
-
-#[test]
-fn fixture_parity_ten_winners_zero_fee() {
-    let json = include_str!("../../tests/fixtures/squad-payouts/ten_winners_zero_fee.json");
+fn fixture_parity_three_winners_fee() {
+    let json = include_str!("../../../tests/fixtures/squad-payouts/three-winners-fee.json");
     assert_fixture_matches_contract(&parse_fixture(json));
 }
 

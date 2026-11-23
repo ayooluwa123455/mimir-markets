@@ -374,7 +374,11 @@ function toPgPlaceholders(count: number): string {
   return Array.from({ length: count }, (_, i) => `$${i + 1}`).join(", ");
 }
 
-export function upsertStatements(name: ReadIndexTableName, rows: BackupRow[]): SqlValue[] {
+export function buildUpsertStatements(name: ReadIndexTableName, rows: BackupRow[]): SqlValue[] {
+  return upsertStatements(name, rows);
+}
+
+function upsertStatements(name: ReadIndexTableName, rows: BackupRow[]): SqlValue[] {
   const spec = TABLE_SPECS[name];
   const columns = spec.columns;
   const conflictTarget = spec.conflictTarget;

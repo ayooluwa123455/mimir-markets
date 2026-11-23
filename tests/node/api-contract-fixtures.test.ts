@@ -15,6 +15,7 @@ import {
 import { apiError, apiErrorCatalogue } from "../../lib/api/errors";
 import {
   AGENT_API_REQUEST_SPEC,
+  API_RECOVERY_ACTIONS,
   checkShape,
   resolveRequestVersion,
   validateAgentApiRequest,
@@ -146,6 +147,7 @@ test("response fixtures validate their public shapes and reject corrupted atomic
       message: { type: "string", required: true },
       retryable: { type: "boolean", required: true },
       retryAfterSeconds: { type: "number" },
+      recoveryAction: { type: "string", oneOf: [...API_RECOVERY_ACTIONS] },
       trace_id: { type: "string" },
     }).ok, true);
   }

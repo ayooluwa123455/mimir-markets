@@ -1,29 +1,39 @@
 //! Payout arithmetic. The mirror of this lives in `lib/fees.ts`.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Env, Symbol, Vec};
 
+use crate::escrow;
 use crate::events;
 use crate::storage;
-use crate::types::{Error, FeeSnapshot, BPS_DIVISOR};
+use crate::types::{
+    Error, FeeClassLiability, FeeLiabilitySummary, FeeRecipientClass, FeeSnapshot, BPS_DIVISOR,
+};
 
-/// Exact fee-ledger view for one recipient, in atomic USDC units.
-///
-/// Field meanings are stable:
-/// - `accrued`: lifetime fees credited to the recipient (monotonic).
-/// - `claimed`: lifetime fees the recipient has withdrawn (monotonic).
-/// - `outstanding`: fees still owed to the recipient (`accrued - claimed`).
-///
-/// `accrued == 0` means no accrual ever happened; `accrued > 0` with
-/// `outstanding == 0` means a fully claimed balance. The two are distinct.
-pub struct FeeBalance {
-    pub accrued: i128,
-    pub claimed: i128,
-    pub outstanding: i128,
+/// Version 1: truncate gross pool/fixed-odds payouts and each profit-fee leg;
+/// leave fee remainders with the participant and pool dust with the last puller.
+pub const ROUNDING_POLICY_VERSION: u32 = 1;
+
+pub fn require_rounding_policy_version(required: u32) -> Result<(), Error> {
+    if required == ROUNDING_POLICY_VERSION {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedRoundingPolicyVersion)
+    }
 }
 
 /// `stake * bps / BPS_DIVISOR`, truncating. Checked multiplication so an
 /// absurd stake errors instead of wrapping, matching Solidity 0.8 revert-on-
 /// overflow semantics.
+/// Returns `Error::StaleFeePolicyRevision` when an approved administrative
+/// change is stale relative to the active fee-policy revision.
+/// Callers must reject such changes and leave the active policy and balances untouched.
+pub fn check_policy_revision(expected: u64, active: u64) -> Result<(), Error> {
+    if expected != active {
+        return Err(Error::StaleFeePolicyRevision);
+    }
+    Ok(())
+}
+
 pub fn gross_payout(stake: i128, bps: u32) -> Result<i128, Error> {
     stake
         .checked_mul(bps as i128)
@@ -69,6 +79,18 @@ pub fn fee_balance(env: &Env, recipient: &Address) -> FeeBalance {
 /// this unreachable for the platform fee; keeping it here means a malformed
 /// snapshot can never mint an unclaimable balance.
 pub fn quote_fees(principal: i128, gross: i128, fees: &FeeSnapshot) -> Result<(i128, i128), Error> {
+    quote_fees_versioned(principal, gross, fees, ROUNDING_POLICY_VERSION)
+}
+
+/// Use the same policy gate for previews and settlement. Reject unknown versions
+/// before calculating fees, including zero-fee and refund paths.
+pub fn quote_fees_versioned(
+    principal: i128,
+    gross: i128,
+    fees: &FeeSnapshot,
+    required_version: u32,
+) -> Result<(i128, i128), Error> {
+    require_rounding_policy_version(required_version)?;
     if gross <= principal {
         return Ok((gross, 0));
     }
@@ -92,6 +114,57 @@ fn bps_of(amount: i128, bps: u32) -> Result<i128, Error> {
         .checked_mul(bps as i128)
         .map(|p| p / BPS_DIVISOR)
         .ok_or(Error::Overflow)
+}
+
+#[cfg(test)]
+mod settlement_vector_tests {
+    //! Independently derived expected values for tiny atomic USDC stakes.
+    //! Expectations are computed by hand (integer floor division), not by
+    //! calling the contract's own helpers, so they cross-check the logic.
+    use super::*;
+
+    #[test]
+    fn pool_share_splits_with_indivisible_remainder() {
+        // Three challengers stake 1, 1, 1 (total 3) against a creator stake of 2.
+        // Each owes floor(1 * 2 / 3) = 0, so the whole pool remains as dust.
+        assert_eq!(pool_share(1, 2, 3).unwrap(), 0);
+        assert_eq!(pool_share(1, 2, 3).unwrap() + pool_share(1, 2, 3).unwrap() + pool_share(1, 2, 3).unwrap(), 0);
+        // Stakes 2, 3, 5 (total 10) against creator stake 7:
+        // floor(2*7/10)=1, floor(3*7/10)=2, floor(5*7/10)=3 -> sum 6, dust 1.
+        assert_eq!(pool_share(2, 7, 10).unwrap(), 1);
+        assert_eq!(pool_share(3, 7, 10).unwrap(), 2);
+        assert_eq!(pool_share(5, 7, 10).unwrap(), 3);
+    }
+
+    #[test]
+    fn pool_share_zero_total_is_zero() {
+        assert_eq!(pool_share(0, 5, 0).unwrap(), 0);
+    }
+
+    #[test]
+    fn pool_share_overflow_errors() {
+        assert_eq!(pool_share(i128::MAX, 2, 1), Err(Error::Overflow));
+    }
+
+    #[test]
+    fn gross_payout_tiny_stakes_round_down() {
+        // 1 atomic unit at 3333 bps: floor(3333 / 10000) = 0.
+        assert_eq!(gross_payout(1, 3333).unwrap(), 0);
+        // 3 atomic units at 5000 bps: floor(15000 / 10000) = 1.
+        assert_eq!(gross_payout(3, 5000).unwrap(), 1);
+    }
+
+    #[test]
+    fn quote_fees_no_profit_takes_nothing() {
+        let fees = FeeSnapshot {
+            platform_fee_bps: 1000,
+            agent_owner_fee_bps: 500,
+            platform_recipient: None,
+            agent_owner_recipient: None,
+        };
+        assert_eq!(quote_fees(10, 10, &fees).unwrap(), (10, 0));
+        assert_eq!(quote_fees(10, 7, &fees).unwrap(), (7, 0));
+    }
 }
 
 /// Split a gross payout into fees and the amount owed.
@@ -127,7 +200,9 @@ pub fn apply_fees(
     if platform_fee > 0 {
         let to = fees.platform_recipient.clone().unwrap();
         storage::add_accrued_fees(env, &to, platform_fee);
+        storage::add_accrued_class_fees(env, &to, FeeRecipientClass::Platform, platform_fee);
         storage::add_lifetime_fees_accrued(env, platform_fee);
+        storage::add_platform_fees_accrued(env, platform_fee);
         events::FeeAccrued {
             id: claim_id,
             recipient: to,
@@ -139,7 +214,9 @@ pub fn apply_fees(
     if owner_fee > 0 {
         let to = fees.agent_owner_recipient.clone().unwrap();
         storage::add_accrued_fees(env, &to, owner_fee);
+        storage::add_accrued_class_fees(env, &to, FeeRecipientClass::AgentOwner, owner_fee);
         storage::add_lifetime_fees_accrued(env, owner_fee);
+        storage::add_agent_owner_fees_accrued(env, owner_fee);
         events::FeeAccrued {
             id: claim_id,
             recipient: to,
@@ -152,48 +229,64 @@ pub fn apply_fees(
     Ok((owed, fees_taken))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Pure-arithmetic boundary checks for the fee ledger view semantics.
-    // The FeeBalance derivation is `outstanding = accrued - claimed`; these
-    // assertions pin the three distinct states the issue requires.
-
-    fn balance(accrued: i128, claimed: i128) -> FeeBalance {
-        FeeBalance {
-            accrued,
-            claimed,
-            outstanding: accrued - claimed,
-        }
+/// Compute aggregate fee liabilities across all markets partitioned by known
+/// recipient class (Platform and AgentOwner), strictly separated from user principal.
+///
+/// Bounded O(1) query reading global instance counters and escrow balance
+/// without iterating claims or markets.
+pub fn fee_liability_summary(env: &Env) -> Result<FeeLiabilitySummary, Error> {
+    if !storage::is_initialized(env) {
+        return Err(Error::NotInitialized);
     }
+    let usdc = storage::usdc(env)?;
+    let platform_accrued = storage::platform_fees_accrued(env);
+    let platform_claimed = storage::platform_fees_claimed(env);
+    let platform_collectible = (platform_accrued - platform_claimed).max(0);
 
-    #[test]
-    fn no_accrual_is_distinct_from_fully_claimed() {
-        let never = balance(0, 0);
-        let fully_claimed = balance(500, 500);
-        assert_eq!(never.accrued, 0);
-        assert_eq!(never.outstanding, 0);
-        assert_eq!(fully_claimed.accrued, 500);
-        assert_eq!(fully_claimed.outstanding, 0);
-        assert_ne!(never.accrued, fully_claimed.accrued);
-    }
+    let agent_owner_accrued = storage::agent_owner_fees_accrued(env);
+    let agent_owner_claimed = storage::agent_owner_fees_claimed(env);
+    let agent_owner_collectible = (agent_owner_accrued - agent_owner_claimed).max(0);
 
-    #[test]
-    fn partial_claim_leaves_exact_outstanding() {
-        let partial = balance(1_000_000, 250_000);
-        assert_eq!(partial.outstanding, 750_000);
-    }
+    let total_collectible_fees = platform_collectible + agent_owner_collectible;
+    let user_principal = escrow::user_principal(env, &usdc, total_collectible_fees);
+    let total_withdrawable = storage::total_withdrawable(env);
 
-    #[test]
-    fn quote_has_no_fees_at_or_below_principal() {
-        let fees = FeeSnapshot {
-            platform_fee_bps: 100,
-            agent_owner_fee_bps: 50,
-            platform_recipient: None,
-            agent_owner_recipient: None,
-        };
-        assert_eq!(quote_fees(100, 100, &fees).unwrap(), (100, 0));
-        assert_eq!(quote_fees(100, 90, &fees).unwrap(), (90, 0));
+    Ok(FeeLiabilitySummary {
+        platform_accrued,
+        platform_claimed,
+        platform_collectible,
+        agent_owner_accrued,
+        agent_owner_claimed,
+        agent_owner_collectible,
+        total_collectible_fees,
+        user_principal,
+        total_withdrawable,
+    })
+}
+
+/// Query liability status for a specific recipient class in O(1).
+pub fn fee_liability_by_class(
+    env: &Env,
+    recipient_class: FeeRecipientClass,
+) -> Result<FeeClassLiability, Error> {
+    if !storage::is_initialized(env) {
+        return Err(Error::NotInitialized);
     }
+    let (accrued, claimed) = match recipient_class {
+        FeeRecipientClass::Platform => (
+            storage::platform_fees_accrued(env),
+            storage::platform_fees_claimed(env),
+        ),
+        FeeRecipientClass::AgentOwner => (
+            storage::agent_owner_fees_accrued(env),
+            storage::agent_owner_fees_claimed(env),
+        ),
+    };
+    let collectible = (accrued - claimed).max(0);
+    Ok(FeeClassLiability {
+        recipient_class,
+        accrued,
+        claimed,
+        collectible,
+    })
 }

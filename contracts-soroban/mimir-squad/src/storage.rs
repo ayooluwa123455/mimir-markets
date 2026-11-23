@@ -1,6 +1,6 @@
 //! Storage keys and typed accessors.
 
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 use crate::types::{Error, Market, PendingFeeRecipient, PendingOracle};
 
@@ -16,6 +16,8 @@ pub enum DataKey {
     MarketCount,
     AccruedFees,
     Market(u64),
+    /// (market) -> monotonically increasing revision, bumped only after a successful mutation.
+    Revision(u64),
     /// Global pause flag. When set, state-mutating entry points that are not
     /// withdrawals are rejected. Withdrawals (claim, claim_parked_payout)
     /// MUST remain available while paused.
@@ -28,10 +30,30 @@ pub enum DataKey {
     /// delivered, because the token transfer trapped (frozen or deauthorized
     /// trustline). Parked until `claim_parked_payout` can move it.
     Payout(u64, u32, Address),
+    /// (market, side) -> open participants in deposit order. Membership follows
+    /// the deposit entries: a new depositor is appended and a full withdrawal
+    /// is removed, so the roster is exactly the set of non-zero positions.
+    Participants(u64, u32),
 }
 
 const BUMP_THRESHOLD: u32 = 120_960;
 const BUMP_EXTEND: u32 = 518_400;
+
+/// Storage schema version exposed to indexers. Bump when the layout of any
+/// `DataKey` variant or persisted struct changes incompatibly.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// Bounded compatibility descriptor returned to indexers so they can decide
+/// whether they understand the on-chain storage layout.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaDescriptor {
+    pub version: u32,
+    pub min_supported_version: u32,
+    pub name: String,
+}
+
+pub const SCHEMA_NAME: &str = "mimir-squad";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -75,6 +97,25 @@ pub fn set_oracle(env: &Env, oracle: &Address) {
 }
 
 // ── Pause ────────────────────────────────────────────────────────────────────
+
+/// Returns the schema descriptor for indexers. Clients must reject any
+/// descriptor whose `version` they do not support.
+pub fn schema_descriptor(env: &Env) -> SchemaDescriptor {
+    SchemaDescriptor {
+        version: SCHEMA_VERSION,
+        min_supported_version: SCHEMA_VERSION,
+        name: String::from_str(env, SCHEMA_NAME),
+    }
+}
+
+/// Validates that a required schema version is supported by this contract.
+pub fn check_schema_version(required: u32) -> Result<(), Error> {
+    if required == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(Error::NotInitialized)
+    }
+}
 
 /// Returns true when the contract is paused. Pause only gates non-withdrawal
 /// state mutations; withdrawal paths must not consult this flag.
@@ -185,6 +226,26 @@ pub fn set_market(env: &Env, id: u64, market: &Market) {
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
 }
 
+// ── Revisions ────────────────────────────────────────────────────────────────
+
+/// Current squad market revision. Zero when no successful mutation has occurred.
+pub fn revision_of(env: &Env, id: u64) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Revision(id))
+        .unwrap_or(0)
+}
+
+/// Write a revision. Callers must only invoke this after a mutation has succeeded,
+/// so that rejected invocations leave the revision unchanged.
+pub fn set_revision(env: &Env, id: u64, value: u64) {
+    let key = DataKey::Revision(id);
+    env.storage().persistent().set(&key, &value);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
+}
+
 // ── Deposits & claims ────────────────────────────────────────────────────────
 
 pub fn deposit_of(env: &Env, id: u64, side: u32, who: &Address) -> i128 {
@@ -218,6 +279,57 @@ pub fn mark_claimed(env: &Env, id: u64, side: u32, who: &Address) {
     env.storage()
         .persistent()
         .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
+}
+
+// ── Participants ─────────────────────────────────────────────────────────────
+
+/// Open participants on one side of a market, in deposit order.
+pub fn participants(env: &Env, id: u64, side: u32) -> Vec<Address> {
+    let key = DataKey::Participants(id, side);
+    match env.storage().persistent().get::<_, Vec<Address>>(&key) {
+        Some(list) => {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
+            list
+        }
+        None => Vec::new(env),
+    }
+}
+
+fn set_participants(env: &Env, id: u64, side: u32, list: &Vec<Address>) {
+    let key = DataKey::Participants(id, side);
+    if list.is_empty() {
+        env.storage().persistent().remove(&key);
+        return;
+    }
+    env.storage().persistent().set(&key, list);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, BUMP_THRESHOLD, BUMP_EXTEND);
+}
+
+/// Record a new position. Order is append-only, so a roster position is stable
+/// for as long as the position is open.
+pub fn push_participant(env: &Env, id: u64, side: u32, who: &Address) {
+    let mut list = participants(env, id, side);
+    list.push_back(who.clone());
+    set_participants(env, id, side, &list);
+}
+
+/// Drop a position that has been fully withdrawn, keeping the remaining deposit
+/// order intact so pagination cursors keep walking the same sequence.
+pub fn remove_participant(env: &Env, id: u64, side: u32, who: &Address) {
+    let list = participants(env, id, side);
+    let mut next: Vec<Address> = Vec::new(env);
+    for entry in list.iter() {
+        if entry != *who {
+            next.push_back(entry);
+        }
+    }
+    if next.len() != list.len() {
+        set_participants(env, id, side, &next);
+    }
 }
 
 // ── Parked payouts ───────────────────────────────────────────────────────────

@@ -28,9 +28,9 @@ mod test_decimals;
 mod test_dust_isolation;
 #[cfg(test)]
 mod test_fee_rounding;
-#[cfg(test)]
+#cfg(test)]
 mod test_fee_recipient_rotation;
-#[cfg(test)]
+#cfg(test)]
 mod test_frozen_payouts;
 #[cfg(test)]
 mod test_lifecycle;
@@ -41,9 +41,19 @@ mod test_payouts;
 #[cfg(test)]
 mod test_cancellation;
 #[cfg(test)]
+mod test_lifecycle;
+#[cfg(test)]
+mod test_membership_cap;
+#[cfg(test)]
+mod test_payouts;
+#[cfg(test)]
+mod test_cancellation;
+#cfg(test)]
 mod test_conservation_random;
 #[cfg(test)]
 mod test_oracle;
+#[cfg(test)]
+mod test_migration_report;
 #[cfg(test)]
 mod test_preview_parity;
 #[cfg(test)]
